@@ -1,10 +1,10 @@
 # Domain-Specific Knowledge Graph Construction and Agent-Driven Querying System
 ## Technical Specification Document
 
-**Version:** 1.0  
-**Date:** February 10, 2026  
-**Author:** Dylan  
-**Project Status:** Planning Phase
+**Version:** 1.1
+**Date:** March 10, 2026
+**Author:** Dylan
+**Project Status:** Phase 0 Complete — Phase 1 In Progress
 
 ---
 
@@ -159,18 +159,36 @@ graph TB
 
 #### Development & Deployment
 - **Language**: Python 3.11+
-- **Agent Framework**: LangGraph or custom agentic framework
+- **Agent Framework**: LangChain (standard pipeline — LCEL chains for extraction, retrieval, and querying)
 - **Experiment Tracking**: MLflow
 - **Containerization**: Docker
 - **Orchestration**: Kubernetes (cloud deployment)
 - **CI/CD**: GitHub Actions
 
 #### Supporting Libraries
-- **Graph Processing**: NetworkX, py2neo
+- **Graph Processing**: NetworkX, `neo4j` Python driver (>=5.14)
 - **NLP**: spaCy, transformers
-- **API Clients**: scholarly, biopython
+- **API Clients**: `biopython` (>=1.83) for PubMed/Entrez
 - **Data Processing**: pandas, polars
+- **Validation**: `pydantic` (>=2.6)
+- **HTTP**: `requests` (>=2.31)
 - **Testing**: pytest, hypothesis
+
+#### LangChain Pipeline Design
+
+The system uses a **standard LangChain LCEL pipeline** pattern rather than a custom agent framework or LangGraph. Each stage is an explicit chain composed with the `|` operator:
+
+```
+Retriever → Prompt | LLM | OutputParser
+```
+
+Key chains:
+1. **Extraction chain** — `text → PromptTemplate | Claude | PydanticOutputParser` → structured entities/relationships
+2. **Graph population chain** — validated entities written to Neo4j via the `neo4j` driver
+3. **Query chain** — `user_query → PromptTemplate | Claude | CypherOutputParser → Neo4j execution → response synthesis`
+4. **RAG chain** (Phase 3) — `Neo4jVector` retriever plugged into a standard `RetrievalQA` or LCEL chain
+
+This approach keeps each step independently testable, avoids framework lock-in on the agent loop, and makes the data flow transparent. LangGraph and custom agent loops will be re-evaluated only if the standard pipeline proves insufficient for multi-hop reasoning.
 
 ---
 
@@ -1418,7 +1436,7 @@ class ExperimentTracker:
 
 ## Implementation Phases
 
-### Phase 0: Project Setup (Week 1)
+### Phase 0: Project Setup ✅ COMPLETE (March 10, 2026)
 
 **Goals:**
 - Set up development environment
@@ -1426,30 +1444,28 @@ class ExperimentTracker:
 - Configure local graph database
 - Establish basic CI/CD
 
-**Deliverables:**
-- Repository with standard Python project structure
-- Docker Compose for local Neo4j + MongoDB
-- Basic tests and linting configured
-- Initial documentation
+**Completed:**
+- `uv`-managed Python 3.11+ project initialized
+- Docker Compose with Neo4j 5.14 + MongoDB 7.0 — both containers running and smoke-tested
+- All initial Python dependencies installed and verified:
+  - `neo4j>=5.14`, `pymongo>=4.6`, `python-dotenv>=1.0`
+  - `anthropic>=0.34`, `biopython>=1.83`, `pydantic>=2.6`, `requests>=2.31`
+- `.env` / `.env.example` scaffolding in place
+- LangChain dependency deferred to Phase 1 when first chain is built
 
-**Tasks:**
-```bash
-# Project structure
-kg-agent-system/
-├── src/
-│   ├── corpus/          # Literature retrieval
-│   ├── extraction/      # Entity extraction
-│   ├── graph/          # Graph DB interface
-│   ├── agents/         # Query agents
-│   ├── evaluation/     # Test suite & metrics
-│   └── utils/
-├── tests/
-├── policies/           # Agent policy files
-├── data/              # Local data storage
-├── notebooks/         # Exploratory analysis
-├── docker/
-├── requirements.txt
-└── README.md
+**Project structure (actual):**
+```
+llm-knowledge-discovery/
+├── src/                 # Application code (to be populated Phase 1+)
+├── doc/                 # Tech spec and design docs
+├── notebooks/           # Exploratory analysis
+├── .data/              # Raw datasets (gitignored)
+├── .models/            # Saved artifacts (gitignored)
+├── .claude/            # Session notes (gitignored)
+├── docker-compose.yml  # Neo4j + MongoDB
+├── .env                # Local credentials (gitignored)
+├── .env.example        # Committed placeholder
+└── pyproject.toml      # uv project + dependencies
 ```
 
 ---
@@ -1693,35 +1709,39 @@ spec:
 - **Docker:** 24.0+
 - **Git:** 2.40+
 
-**Services (via Docker Compose):**
+**Services (via Docker Compose — see `docker-compose.yml`):**
 ```yaml
-version: '3.8'
 services:
   neo4j:
     image: neo4j:5.14
+    container_name: llm-kg-neo4j
     ports:
-      - "7474:7474"  # Browser
-      - "7687:7687"  # Bolt
+      - "7474:7474"   # HTTP browser UI
+      - "7687:7687"   # Bolt protocol
     environment:
-      NEO4J_AUTH: neo4j/password
+      - NEO4J_AUTH=${NEO4J_USER}/${NEO4J_PASSWORD}
     volumes:
-      - ./data/neo4j:/data
-  
+      - neo4j_data:/data
+    restart: unless-stopped
+
   mongodb:
     image: mongo:7.0
+    container_name: llm-kg-mongodb
     ports:
       - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD}
     volumes:
-      - ./data/mongo:/data/db
-  
-  mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.9.2
-    ports:
-      - "5000:5000"
-    command: mlflow server --host 0.0.0.0
-    volumes:
-      - ./data/mlflow:/mlflow
+      - mongo_data:/data/db
+    restart: unless-stopped
+
+volumes:
+  neo4j_data:
+  mongo_data:
 ```
+
+> **Note:** Credentials are loaded from `.env`. Neo4j password must be 8+ chars. MongoDB init vars only apply on first start (empty volume). To reset: `docker compose down -v`.
 
 ### Cloud Deployment (Production)
 
