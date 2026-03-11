@@ -1,1858 +1,360 @@
-# Domain-Specific Knowledge Graph Construction and Agent-Driven Querying System
-## Technical Specification Document
-
-**Version:** 1.1
-**Date:** March 10, 2026
-**Author:** Dylan
-**Project Status:** Phase 0 Complete — Phase 1 In Progress
+# LLM Knowledge Discovery: Plant Gene Regulation
+## Technical Specification v1.2
+**Date:** 2026-03-11
+**Status:** Draft — Phase 1 Planning
 
 ---
 
-## Table of Contents
+## 1. Executive Summary
 
-1. [Executive Summary](#executive-summary)
-2. [System Overview](#system-overview)
-3. [Architecture](#architecture)
-4. [Component Specifications](#component-specifications)
-5. [Data Models](#data-models)
-6. [Agent Design](#agent-design)
-7. [Evaluation Framework](#evaluation-framework)
-8. [Implementation Phases](#implementation-phases)
-9. [Infrastructure Requirements](#infrastructure-requirements)
-10. [Future Directions](#future-directions)
+This system extracts, structures, and reasons over plant gene regulation knowledge from scientific literature. The initial scope is *Arabidopsis thaliana* with gene names normalized to TAIR identifiers. The architecture is parameterized by species to allow future expansion.
+
+The MVP corpus is built from **PubMed abstracts only**. A key study goal is to quantify how much knowledge can be extracted from abstracts alone, then measure the cost/benefit of upgrading to full-text retrieval — using the same evaluation metrics to make the comparison rigorous.
+
+The system pursues two distinct goals:
+
+1. **Knowledge Extraction** — faithfully surface facts already present in the literature corpus, evaluated via RAG + RAGAS metrics.
+2. **Knowledge Discovery** — infer regulatory relationships not explicitly stated in any single paper, evaluated via a masked-prediction benchmark on the knowledge graph.
 
 ---
 
-## Executive Summary
+## 2. Domain & Scope
 
-### Project Vision
+### 2.1 Target Domain
 
-Build an autonomous system that constructs domain-specific knowledge graphs from scientific literature and uses LLM agents to perform sophisticated graph-based reasoning. The system emphasizes exploratory discovery, fuzzy reasoning over incomplete graphs, and self-improving agent policies.
+Plant gene regulation encompasses:
 
-### Core Objectives
+- **Transcriptional regulation** — TF X activates/represses gene Y in condition Z
+- **Differential expression** — gene W is up/down-regulated under treatment T or in tissue/developmental stage S
+- **Knockout / loss-of-function experiments** — KO of gene G produces phenotype P
+- **Protein-DNA binding** — TF X binds the promoter of gene Y
+- **Signaling cascades** — upstream kinase/pathway activates downstream TF
 
-1. **Automated KG Construction**: Extract entities and relationships from scientific literature with minimal human curation
-2. **Agent-Driven Querying**: Enable natural language questions that translate into multi-hop graph exploration
-3. **Hypothesis Generation**: Support "soft" reasoning that imputes missing relationships based on graph context
-4. **Self-Evaluation**: Agents develop and test their own reasoning strategies through competitive policy iteration
+All of these produce structured triples of the form `(entity_A, relationship, entity_B, context)` that populate the knowledge graph.
 
-### Initial Domain Focus
+### 2.2 Species Parameterization
 
-Gene Regulatory Networks (GRNs) in biotech/gene editing, focusing on:
-- Genes, RNAs, and their regulatory relationships
-- Activation/inhibition mechanisms
-- Differential expression patterns
-- Tissue/organ/cell-type contexts
+The corpus retrieval and ontology mapping are parameterized by `SPECIES`. Phase 1 targets *Arabidopsis thaliana* exclusively.
 
-### Success Metrics
+| Value | Organism | Gene Name Authority |
+|---|---|---|
+| `arabidopsis` | *Arabidopsis thaliana* | **TAIR** (e.g., `AT1G65480`, alias `FT`) ← **Phase 1** |
+| `maize` | *Zea mays* | MaizeGDB |
+| `rice` | *Oryza sativa* | RAP-DB |
+| `tomato` | *Solanum lycopersicum* | SGN |
 
-- **Reconstruction Accuracy**: Agents successfully rediscover intentionally masked high-confidence edges
-- **Hypothesis Quality**: Novel predictions validated through literature review or experimental confirmation
-- **Policy Evolution**: Measurable improvement in agent reasoning strategies over time
-- **Scalability**: System handles 10s-100s GB corpus with acceptable latency
+All gene names extracted from abstracts are normalized to their canonical TAIR locus ID (e.g., `FLOWERING LOCUS T`, `FT`, `ft-1` all resolve to `AT1G65480`). Common aliases are maintained as a `aliases[]` property on the node.
 
----
+### 2.3 Abstract vs. Full Text (Planned Study)
 
-## System Overview
+The MVP uses **PubMed abstracts only**. After evaluation baselines are established, full-text retrieval will be added (via PubMed Central Open Access) and the same metrics recomputed. This produces a direct cost/benefit comparison:
 
-### High-Level Workflow
+- **Abstracts:** free, fast, widely available, lower information density
+- **Full text:** higher cost (API access or PMC scraping), slower, richer context
 
-```mermaid
-graph TD
-    A[Literature Sources] -->|Scheduled Retrieval| B[Corpus Manager]
-    B -->|New/Updated Papers| C[Entity Extraction Pipeline]
-    C -->|Entities & Relations| D[Knowledge Graph DB]
-    D -->|Graph State| E[Query Agent]
-    F[User Query] -->|Natural Language| E
-    E -->|Graph Exploration| D
-    E -->|Hard/Soft Answers| G[Response]
-    D -->|Masked Graph| H[Evaluation Agent]
-    H -->|Test Cases| E
-    H -->|Performance Metrics| I[Policy Tracker]
-    I -->|Best Policies| E
-```
+The delta in RAGAS scores and Hits@K between the two corpus types is a primary research output of this project.
 
-### System Components
+### 2.4 Out of Scope (for now)
 
-1. **Literature Retrieval System**: Queries academic databases, manages corpus updates
-2. **Entity Extraction Pipeline**: LLM-based extraction of entities and relationships
-3. **Knowledge Graph Database**: Versioned graph storage with provenance tracking
-4. **Query Agent**: Translates natural language to graph exploration plans
-5. **Evaluation Framework**: Self-testing system with edge masking and policy competition
-6. **Policy Management**: Tracks agent reasoning strategies and performance
+- Post-translational regulation (phosphorylation, ubiquitination)
+- Epigenetic mechanisms (methylation, histone modification)
+- Multi-species comparative genomics
+- Real-time inference serving
+- Non-PubMed corpus sources — Google Scholar (no API, ToS issues) and arXiv (wrong preprint server for plant biology) are not worth pursuing. **bioRxiv** is the relevant biology preprint server and a reasonable Phase 2 corpus expansion once PubMed baselines are established; preprints are excluded from the MVP to keep ground truth clean.
 
 ---
 
-## Architecture
-
-### System Architecture Diagram
-
-```mermaid
-graph TB
-    subgraph "Data Collection Layer"
-        A1[Google Scholar API]
-        A2[PubMed API]
-        A3[bioRxiv/arXiv]
-        A4[Corpus Manager]
-        A1 --> A4
-        A2 --> A4
-        A3 --> A4
-    end
-    
-    subgraph "Processing Layer"
-        B1[Deduplication Service]
-        B2[Abstract/Full-Text Selector]
-        B3[LLM Entity Extractor]
-        B4[Schema Evolution Manager]
-        A4 --> B1
-        B1 --> B2
-        B2 --> B3
-        B3 --> B4
-    end
-    
-    subgraph "Storage Layer"
-        C1[Graph Database]
-        C2[Vector Store]
-        C3[Document Store]
-        C4[Version Control]
-        B4 --> C1
-        B3 --> C2
-        B2 --> C3
-        C1 --> C4
-    end
-    
-    subgraph "Agent Layer"
-        D1[Query Planner]
-        D2[Graph Navigator]
-        D3[Hypothesis Generator]
-        D4[Policy Engine]
-        E[User Interface] --> D1
-        D1 --> D2
-        D2 --> D3
-        D3 --> D4
-    end
-    
-    subgraph "Evaluation Layer"
-        F1[Edge Masking Service]
-        F2[Test Case Generator]
-        F3[Metrics Collector]
-        F4[MLflow Tracking]
-        C1 --> F1
-        F1 --> F2
-        F2 --> D1
-        D4 --> F3
-        F3 --> F4
-    end
-    
-    C1 --> D2
-    C2 --> D2
-    C3 --> D2
-```
-
-### Technology Stack
-
-#### Core Components
-- **Graph Database**: Neo4j (popular, mature, good Python support)
-- **Vector Store**: Pinecone or Chroma (for semantic entity similarity)
-- **Document Store**: MongoDB (for raw paper storage with metadata)
-- **LLM Provider**: Anthropic Claude API (primary), with fallback to open-source models
-
-#### Development & Deployment
-- **Language**: Python 3.11+
-- **Agent Framework**: LangChain (standard pipeline — LCEL chains for extraction, retrieval, and querying)
-- **Experiment Tracking**: MLflow
-- **Containerization**: Docker
-- **Orchestration**: Kubernetes (cloud deployment)
-- **CI/CD**: GitHub Actions
-
-#### Supporting Libraries
-- **Graph Processing**: NetworkX, `neo4j` Python driver (>=5.14)
-- **NLP**: spaCy, transformers
-- **API Clients**: `biopython` (>=1.83) for PubMed/Entrez
-- **Data Processing**: pandas, polars
-- **Validation**: `pydantic` (>=2.6)
-- **HTTP**: `requests` (>=2.31)
-- **Testing**: pytest, hypothesis
-
-#### LangChain Pipeline Design
-
-The system uses a **standard LangChain LCEL pipeline** pattern rather than a custom agent framework or LangGraph. Each stage is an explicit chain composed with the `|` operator:
+## 3. System Architecture
 
 ```
-Retriever → Prompt | LLM | OutputParser
-```
-
-Key chains:
-1. **Extraction chain** — `text → PromptTemplate | Claude | PydanticOutputParser` → structured entities/relationships
-2. **Graph population chain** — validated entities written to Neo4j via the `neo4j` driver
-3. **Query chain** — `user_query → PromptTemplate | Claude | CypherOutputParser → Neo4j execution → response synthesis`
-4. **RAG chain** (Phase 3) — `Neo4jVector` retriever plugged into a standard `RetrievalQA` or LCEL chain
-
-This approach keeps each step independently testable, avoids framework lock-in on the agent loop, and makes the data flow transparent. LangGraph and custom agent loops will be re-evaluated only if the standard pipeline proves insufficient for multi-hop reasoning.
-
----
-
-## Component Specifications
-
-### 1. Literature Retrieval System
-
-#### Responsibilities
-- Query multiple academic databases on a schedule
-- Download abstracts (and optionally full text)
-- Detect and deduplicate papers across sources
-- Trigger extraction pipeline for new content
-
-#### API Integrations
-
-**Google Scholar**
-```python
-from scholarly import scholarly
-
-class ScholarRetriever:
-    def search_papers(self, query: str, max_results: int = 100) -> List[Paper]:
-        """Search Google Scholar for papers matching query"""
-        pass
-    
-    def get_paper_metadata(self, paper_id: str) -> PaperMetadata:
-        """Retrieve detailed metadata for a specific paper"""
-        pass
-```
-
-**PubMed**
-```python
-from Bio import Entrez
-
-class PubMedRetriever:
-    def search_biomedical(self, query: str, date_range: tuple) -> List[Paper]:
-        """Search PubMed with MeSH terms and date filters"""
-        pass
-    
-    def fetch_abstracts(self, pmids: List[str]) -> List[Abstract]:
-        """Bulk fetch abstracts by PMID"""
-        pass
-```
-
-**Preprint Servers**
-```python
-class PreprintRetriever:
-    def search_biorxiv(self, query: str) -> List[Paper]:
-        """Search bioRxiv/medRxiv preprints"""
-        pass
-    
-    def check_publication_status(self, doi: str) -> Optional[str]:
-        """Check if preprint has been officially published"""
-        pass
-```
-
-#### Deduplication Strategy
-
-```python
-class Deduplicator:
-    def __init__(self):
-        self.title_threshold = 0.9  # Fuzzy match similarity
-        self.doi_registry = set()
-    
-    def is_duplicate(self, paper: Paper) -> bool:
-        """
-        Check if paper is duplicate using:
-        1. DOI exact match
-        2. Title fuzzy match (Levenshtein distance)
-        3. Author overlap + year + venue
-        """
-        pass
-    
-    def link_preprint_to_publication(self, preprint: Paper, published: Paper):
-        """Create bidirectional link between preprint and published version"""
-        pass
-```
-
-#### Scheduling & Incremental Updates
-
-```python
-class CorpusUpdateScheduler:
-    def __init__(self, schedule: str = "weekly"):
-        self.schedule = schedule
-        self.last_update = None
-    
-    async def run_scheduled_update(self):
-        """
-        1. Query all sources for papers since last_update
-        2. Deduplicate new papers
-        3. Emit event to trigger extraction pipeline
-        """
-        pass
-    
-    def emit_extraction_event(self, new_papers: List[Paper]):
-        """Trigger entity extraction for new corpus additions"""
-        pass
+┌─────────────────────────────────────────────────────────────┐
+│                    Literature Corpus                         │
+│  PubMed (biopython/Entrez) → MongoDB (raw abstracts/papers) │
+└───────────────────────┬─────────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 Extraction Pipeline                          │
+│  LangChain LCEL: Prompt | Claude | PydanticOutputParser      │
+│  Output: structured triples (entity, relation, entity, ctx) │
+└───────────────────────┬─────────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  Knowledge Graph (Neo4j)                     │
+│  Nodes: Gene, TF, Pathway, Phenotype, Condition, Experiment  │
+│  Edges: REGULATES, EXPRESSED_IN, BINDS_PROMOTER_OF, etc.    │
+│  Provenance: each edge links back to source paper(s)         │
+└──────────────┬────────────────────────┬─────────────────────┘
+               │                        │
+               ▼                        ▼
+┌──────────────────────┐   ┌──────────────────────────────────┐
+│  Eval Track 1: RAG   │   │  Eval Track 2: Masked Prediction  │
+│  (Knowledge          │   │  (Knowledge Discovery)            │
+│   Extraction)        │   │                                   │
+│  RAG + RAGAS         │   │  Edge masking → link prediction   │
+└──────────────────────┘   └──────────────────────────────────┘
 ```
 
 ---
 
-### 2. Entity Extraction Pipeline
+## 4. Knowledge Graph Schema
 
-#### Extraction Agent Design
+### 4.1 Node Types
 
-```python
-from anthropic import Anthropic
+| Label | Description | Key Properties |
+|---|---|---|
+| `Gene` | Any gene locus | `name`, `species`, `locus_id`, `aliases[]` |
+| `TranscriptionFactor` | TF (subtype of Gene) | inherits Gene + `tf_family` |
+| `Protein` | Protein product of a gene | `name`, `uniprot_id` |
+| `Pathway` | Biological pathway | `name`, `pathway_db_id` |
+| `Phenotype` | Observable trait or outcome | `name`, `description`, `measurement_type` (`quantitative`, `qualitative`, `binary`) |
+| `Condition` | Experimental condition or tissue/stage | `name`, `condition_type` (`tissue`, `treatment`, `developmental_stage`, `stress`) |
+| `Experiment` | Source experiment | `type` (`KO`, `overexpression`, `RNA-seq`, `ChIP-seq`, `Y1H`, etc.), `paper_id` |
+| `Paper` | Source publication | `pubmed_id`, `title`, `year`, `abstract` |
 
-class EntityExtractionAgent:
-    def __init__(self, model: str = "claude-sonnet-4-20250514"):
-        self.client = Anthropic()
-        self.model = model
-        self.schema = self.load_current_schema()
-    
-    async def extract_entities(self, text: str) -> ExtractionResult:
-        """
-        Extract entities and relationships from paper text.
-        
-        Prompt includes:
-        - Current schema (evolving)
-        - Domain context (GRN focus)
-        - Output format (structured JSON)
-        - Confidence scoring
-        """
-        prompt = self._build_extraction_prompt(text)
-        response = await self.client.messages.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=4096
-        )
-        return self._parse_extraction_result(response)
-    
-    def _build_extraction_prompt(self, text: str) -> str:
-        return f"""
-        You are extracting biological entities and relationships from scientific text.
-        
-        Current Schema: {self.schema}
-        
-        Text to analyze:
-        {text}
-        
-        Extract:
-        1. Entities (genes, RNAs, proteins, pathways, diseases, cell types, tissues)
-        2. Relationships (activates, inhibits, expressed_in, regulates, etc.)
-        3. Context (experimental conditions, species, tissue/cell type)
-        4. Evidence strength (direct observation, inference, hypothesis)
-        
-        Output as structured JSON with confidence scores (0-1).
-        """
-```
+### 4.2 Relationship Types
 
-#### Schema Evolution
+Regulatory direction is encoded in the relationship type itself (not a property) for clean Cypher querying. Provenance is stored as `paper_ids[]` / `paper_count` directly on each edge — Neo4j does not support edges pointing to other edges, so there is no separate provenance relationship.
 
-```python
-class SchemaEvolutionManager:
-    def __init__(self, graph_db):
-        self.graph = graph_db
-        self.entity_types = set()
-        self.relationship_types = set()
-    
-    def update_schema(self, extraction_result: ExtractionResult):
-        """
-        Continuously evolve schema based on newly discovered entity/relation types.
-        
-        Strategy:
-        1. New entity types added if seen >N times across papers
-        2. New relationship types validated by LLM before addition
-        3. Schema versioned in graph DB
-        """
-        for entity in extraction_result.entities:
-            if entity.type not in self.entity_types:
-                if self._validate_new_entity_type(entity.type):
-                    self.entity_types.add(entity.type)
-                    self.graph.create_entity_type(entity.type)
-        
-        for relation in extraction_result.relationships:
-            if relation.type not in self.relationship_types:
-                if self._validate_new_relation_type(relation.type):
-                    self.relationship_types.add(relation.type)
-                    self.graph.create_relationship_type(relation.type)
-    
-    def _validate_new_entity_type(self, entity_type: str) -> bool:
-        """Ask LLM if this is a valid biological entity type"""
-        pass
-    
-    def _validate_new_relation_type(self, relation_type: str) -> bool:
-        """Ask LLM if this is a valid biological relationship"""
-        pass
-```
+| Type | From → To | Description |
+|---|---|---|
+| `ACTIVATES` | Gene/TF → Gene | Explicit transcriptional activation |
+| `REPRESSES` | Gene/TF → Gene | Explicit transcriptional repression |
+| `REGULATES` | Gene/TF → Gene | Direction unknown or unclear from evidence |
+| `BINDS_PROMOTER_OF` | TF/Protein → Gene | Physical DNA binding evidence |
+| `DIFFERENTIALLY_EXPRESSED_IN` | Gene → Condition | Up/down-regulation in a context |
+| `PART_OF` | Gene → Pathway | Pathway membership |
+| `PRODUCES_PHENOTYPE` | Experiment → Phenotype | Experimental outcome — carries direction and magnitude (see §4.3) |
+| `TARGETS` | Experiment → Gene | The gene under study |
 
-#### Initial GRN Schema
+### 4.3 Edge Properties
 
-```python
-INITIAL_SCHEMA = {
-    "entity_types": [
-        "Gene",
-        "mRNA",
-        "miRNA",
-        "lncRNA",
-        "Protein",
-        "Pathway",
-        "CellType",
-        "Tissue",
-        "Organ",
-        "Disease",
-        "Species"
-    ],
-    "relationship_types": [
-        "activates",
-        "inhibits",
-        "regulates",
-        "transcribes_to",
-        "translates_to",
-        "expressed_in",
-        "upregulated_in",
-        "downregulated_in",
-        "part_of",
-        "associated_with"
-    ],
-    "context_attributes": [
-        "experimental_method",
-        "tissue_context",
-        "cell_type_context",
-        "species",
-        "condition",
-        "evidence_strength"
-    ]
-}
-```
+**All edges** carry document support metadata:
+- `paper_ids[]`: list of supporting PubMed IDs
+- `paper_count`: integer count of supporting papers (derived from `paper_ids[]`; used for confidence thresholding and masked prediction stratification)
 
-#### Batch Processing
+**Regulatory edges** (`ACTIVATES`, `REPRESSES`, `REGULATES`, `BINDS_PROMOTER_OF`, `DIFFERENTIALLY_EXPRESSED_IN`) additionally carry:
+- `evidence_type`: `direct` / `indirect` / `inferred`
+- `confidence`: float 0–1 (LLM-assigned per extraction)
+- `condition_id`: FK to Condition node
 
-```python
-class ExtractionPipeline:
-    def __init__(self, batch_size: int = 10):
-        self.batch_size = batch_size
-        self.agent = EntityExtractionAgent()
-    
-    async def process_corpus_update(self, new_papers: List[Paper]):
-        """
-        Process new papers in batches with error handling and retry logic.
-        """
-        batches = self._create_batches(new_papers, self.batch_size)
-        
-        for batch in batches:
-            results = await asyncio.gather(
-                *[self.agent.extract_entities(paper.abstract) for paper in batch],
-                return_exceptions=True
-            )
-            
-            for paper, result in zip(batch, results):
-                if isinstance(result, Exception):
-                    self._log_extraction_error(paper, result)
-                else:
-                    self._store_extraction_result(paper, result)
-```
+Note: direction is encoded in the relationship type itself (`ACTIVATES` vs `REPRESSES` vs `REGULATES`), so no separate `direction` property is needed.
+
+**`PRODUCES_PHENOTYPE` edges** carry explicit directionality for the phenotypic outcome:
+- `perturbation_type`: `KO` / `overexpression` / `RNAi` / `natural_variant` / `other`
+- `phenotype_direction`: `increase` / `decrease` / `no_change` / `ectopic` / `loss` / `gain` / `unknown`
+  - e.g., KO of FT → `decrease` in flowering time trait
+- `phenotype_magnitude`: `strong` / `moderate` / `weak` / `unknown` (qualitative scale; quantitative values go in `phenotype_value`)
+- `phenotype_value`: optional float — the actual measured value if reported (e.g., days-to-flowering)
+- `phenotype_unit`: optional string — unit for `phenotype_value` (e.g., `days`, `cm`, `fold-change`)
+- `confidence`: float 0–1 (LLM-assigned)
+- `condition_id`: FK to Condition node
+
+This allows queries like: *"Which genes, when knocked out, strongly decrease hypocotyl length?"*
 
 ---
 
-### 3. Knowledge Graph Database
+## 5. Pipeline Design
 
-#### Graph Schema & Data Model
+All stages use LangChain LCEL. Each stage is independently runnable and testable.
 
-```cypher
-// Node Types (evolving)
-CREATE CONSTRAINT gene_id IF NOT EXISTS FOR (g:Gene) REQUIRE g.id IS UNIQUE;
-CREATE CONSTRAINT rna_id IF NOT EXISTS FOR (r:RNA) REQUIRE r.id IS UNIQUE;
-CREATE CONSTRAINT protein_id IF NOT EXISTS FOR (p:Protein) REQUIRE p.id IS UNIQUE;
-
-// Relationship Properties
-// All relationships include:
-// - confidence: float (0-1)
-// - evidence: list of paper IDs
-// - extraction_date: timestamp
-// - version: int
-
-// Example: Gene Regulation
-(:Gene)-[:ACTIVATES {
-    confidence: 0.85,
-    evidence: ["pmid:12345", "pmid:67890"],
-    context: {
-        tissue: "liver",
-        cell_type: "hepatocyte",
-        condition: "high glucose"
-    },
-    extraction_date: "2026-02-10",
-    version: 1
-}]->(:Gene)
-```
-
-#### Versioning Strategy
+### 5.1 Corpus Retrieval
 
 ```python
-class VersionedGraphDB:
-    def __init__(self, neo4j_uri: str):
-        self.driver = GraphDatabase.driver(neo4j_uri)
-        self.current_version = self._get_latest_version()
-    
-    def add_relationship(self, source_id: str, target_id: str, 
-                        rel_type: str, properties: dict):
-        """
-        Add relationship with automatic versioning.
-        Creates delta record for efficient version tracking.
-        """
-        with self.driver.session() as session:
-            # Increment version
-            new_version = self.current_version + 1
-            
-            # Add relationship with version metadata
-            session.run("""
-                MATCH (a {id: $source_id}), (b {id: $target_id})
-                CREATE (a)-[r:%s {
-                    confidence: $confidence,
-                    evidence: $evidence,
-                    version: $version,
-                    created_at: datetime()
-                }]->(b)
-                """ % rel_type,
-                source_id=source_id,
-                target_id=target_id,
-                confidence=properties.get('confidence', 0.5),
-                evidence=properties.get('evidence', []),
-                version=new_version
-            )
-            
-            # Record delta for version control
-            self._record_delta(new_version, "ADD_RELATIONSHIP", {
-                "source": source_id,
-                "target": target_id,
-                "type": rel_type,
-                "properties": properties
-            })
-    
-    def _record_delta(self, version: int, operation: str, details: dict):
-        """Store minimal delta for efficient version reconstruction"""
-        pass
-    
-    def rollback_to_version(self, target_version: int):
-        """Reconstruct graph at specific version using deltas"""
-        pass
+# Parameterized PubMed query builder
+query = build_pubmed_query(species="arabidopsis", topics=["gene regulation", "transcription factor", "differential expression", "knockout"])
+# → fetches abstracts + metadata via biopython Entrez
+# → stores raw documents in MongoDB collection: papers_{species}
 ```
 
-#### Provenance Tracking
+Query construction targets papers that include:
+- TF-target relationships
+- Differential expression studies (RNA-seq, microarray)
+- KO / T-DNA insertion phenotype studies
+- ChIP-seq / Y1H binding data
 
-```python
-class ProvenanceTracker:
-    """
-    Maintain bidirectional links between KG elements and source papers.
-    """
-    def link_entity_to_paper(self, entity_id: str, paper_id: str, 
-                            sentence: str, confidence: float):
-        """
-        Create provenance link:
-        (Entity)-[:EXTRACTED_FROM {sentence, confidence}]->(Paper)
-        """
-        pass
-    
-    def get_evidence_for_relationship(self, rel_id: str) -> List[Evidence]:
-        """
-        Retrieve all papers/sentences that support a relationship.
-        Returns sorted by confidence.
-        """
-        pass
-    
-    def trace_entity_evolution(self, entity_id: str) -> Timeline:
-        """Show how entity's properties/relationships changed over corpus versions"""
-        pass
+Initial target: **500–1000 abstracts** per species (sufficient ground truth for evaluation).
+
+### 5.2 Extraction Chain
+
+```
+abstract_text
+    → ExtractionPromptTemplate      # few-shot examples for plant gene regulation
+    | ClaudeModel                   # claude-sonnet-4-6 or claude-opus-4-6
+    | PydanticOutputParser          # → ExtractionResult(entities[], relationships[])
+    → MongoDB: extractions_{species}
 ```
 
-#### Hypothetical Edge Management
+The extraction prompt instructs Claude to:
+1. Identify all gene names, TF names, pathways, phenotypes, conditions
+2. Extract all regulatory relationships with direction and evidence type
+3. Note the experimental method used
+4. Flag uncertainty explicitly (do not hallucinate relationships)
 
-```python
-class HypotheticalEdgeManager:
-    """
-    Manage tentative/predicted relationships with confidence thresholds.
-    """
-    def __init__(self, confidence_threshold: float = 0.7):
-        self.threshold = confidence_threshold
-    
-    def add_hypothetical_edge(self, source_id: str, target_id: str,
-                             rel_type: str, confidence: float,
-                             reasoning: str):
-        """
-        Add edge with 'hypothetical' flag.
-        Edge marked as :HYPOTHETICAL_ACTIVATES instead of :ACTIVATES
-        """
-        with self.driver.session() as session:
-            session.run(f"""
-                MATCH (a {{id: $source_id}}), (b {{id: $target_id}})
-                CREATE (a)-[r:HYPOTHETICAL_{rel_type} {{
-                    confidence: $confidence,
-                    reasoning: $reasoning,
-                    created_at: datetime(),
-                    validation_attempts: 0
-                }}]->(b)
-                """,
-                source_id=source_id,
-                target_id=target_id,
-                confidence=confidence,
-                reasoning=reasoning
-            )
-    
-    def promote_hypothesis_to_fact(self, rel_id: str):
-        """
-        Convert hypothetical edge to standard edge when confidence exceeds threshold.
-        Implements Hebbian-like learning: repeated validation increases confidence.
-        """
-        pass
-    
-    def validate_hypothesis(self, rel_id: str, validation_result: bool):
-        """
-        Update confidence based on validation outcome.
-        Increase if validated, decrease if contradicted.
-        """
-        pass
+### 5.3 Graph Loader
+
 ```
+ExtractionResult
+    → entity deduplication (normalize gene names via species DB lookup)
+    → Neo4j MERGE on Gene/TF/Condition nodes
+    → Neo4j MERGE on relationship edges with provenance
+```
+
+Deduplication is critical: `FT`, `FLOWERING LOCUS T`, and `AT1G65480` must resolve to the same node. The TAIR API is used to look up canonical locus IDs and populate the `aliases[]` list at load time. When the TAIR API cannot resolve a name, the raw name is retained with a `tair_unresolved=True` flag for manual review.
+
+### 5.4 Query Interface (later phase)
+
+Natural language → Cypher query via LangChain Neo4j integration. Out of scope for Phase 1.
 
 ---
 
-### 4. Query Agent Design
+## 6. Evaluation Framework
 
-#### Agent Architecture
+### 6.1 Track 1: Knowledge Extraction (RAG + RAGAS)
 
-```python
-class KnowledgeGraphQueryAgent:
-    def __init__(self, graph_db, policy_file: str = None):
-        self.graph = graph_db
-        self.client = Anthropic()
-        self.policy = self.load_policy(policy_file) if policy_file else self.default_policy()
-        self.execution_log = []
-    
-    async def answer_query(self, user_query: str, mode: str = "soft") -> Answer:
-        """
-        Main entry point for query processing.
-        
-        Args:
-            user_query: Natural language question
-            mode: "hard" (only verified edges) or "soft" (include hypotheses)
-        
-        Returns:
-            Answer object with reasoning trace
-        """
-        # Phase 1: Query Understanding
-        query_plan = await self._create_query_plan(user_query)
-        
-        # Phase 2: Graph Exploration
-        if mode == "hard":
-            results = self._execute_hard_query(query_plan)
-        else:
-            results = await self._execute_soft_query(query_plan)
-        
-        # Phase 3: Answer Synthesis
-        answer = await self._synthesize_answer(user_query, results)
-        
-        # Log execution for policy learning
-        self._log_execution(user_query, query_plan, results, answer)
-        
-        return answer
-    
-    async def _create_query_plan(self, user_query: str) -> QueryPlan:
-        """
-        Convert natural language to graph exploration strategy.
-        
-        Example:
-        Query: "What genes regulate BRCA1 in breast tissue?"
-        Plan:
-          1. Find node: Gene(name="BRCA1")
-          2. Find incoming edges: (:Gene)-[:REGULATES]->(:Gene{name="BRCA1"})
-          3. Filter by context: tissue="breast"
-          4. Return source nodes with evidence
-        """
-        prompt = f"""
-        You are a knowledge graph query planner for a gene regulatory network.
-        
-        Convert this natural language query into a graph exploration plan:
-        "{user_query}"
-        
-        Current policy guidance:
-        {self.policy}
-        
-        Output a structured plan with:
-        1. Entity resolution (which nodes to find)
-        2. Path patterns (what relationships to traverse)
-        3. Filters (context, confidence thresholds)
-        4. Aggregation strategy
-        
-        Format as JSON.
-        """
-        
-        response = await self.client.messages.create(
-            model="claude-sonnet-4-20250514",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2048
-        )
-        
-        return QueryPlan.from_json(response.content[0].text)
-```
+**Goal:** Measure how faithfully the system can answer questions about gene regulation that are directly answerable from the corpus.
 
-#### Hard Query Execution
+**Setup:**
+1. Build a RAG retriever over the raw abstract corpus (vector embeddings in Chroma or Pinecone)
+2. Construct a two-part QA benchmark (see below)
+3. Run the RAG pipeline and evaluate with **RAGAS**
 
-```python
-def _execute_hard_query(self, plan: QueryPlan) -> QueryResults:
-    """
-    Execute query using only high-confidence, verified edges.
-    No hypothesis generation.
-    """
-    cypher_query = self._plan_to_cypher(plan, include_hypothetical=False)
-    
-    with self.graph.driver.session() as session:
-        results = session.run(cypher_query, **plan.parameters)
-        
-        return QueryResults(
-            nodes=[record["node"] for record in results],
-            paths=[record["path"] for record in results],
-            evidence=self._gather_evidence(results),
-            mode="hard"
-        )
+**RAGAS Metrics:**
+| Metric | What it measures |
+|---|---|
+| Faithfulness | Does the answer only state things the context supports? |
+| Answer Relevancy | Is the answer relevant to the question? |
+| Context Precision | Is the retrieved context actually useful? |
+| Context Recall | Does the retrieval capture all relevant evidence? |
 
-def _plan_to_cypher(self, plan: QueryPlan, include_hypothetical: bool) -> str:
-    """
-    Translate QueryPlan to Cypher query.
-    
-    If include_hypothetical=True, also match HYPOTHETICAL_* relationships.
-    """
-    pass
-```
+**Benchmark Construction — Two Parts:**
 
-#### Soft Query Execution (Hypothesis Generation)
+*Part A: Gold-standard anchor (external ground truth)*
+Download the curated *Arabidopsis* TF-target dataset from **PlantRegMap** (plantregmap.gao-lab.org), which provides experimentally validated regulatory relationships with evidence codes. For each curated relationship, generate a natural-language question (e.g., "Does FT activate SOC1 in Arabidopsis?") with the expected answer derived from the curated record — not from our extraction. This anchors evaluation to an independent ground truth and catches systematic extraction errors that self-consistency metrics would miss.
 
-```python
-async def _execute_soft_query(self, plan: QueryPlan) -> QueryResults:
-    """
-    Execute query with hypothesis generation for missing edges.
-    
-    Strategy:
-    1. Execute hard query first
-    2. Identify gaps in the result graph
-    3. Generate hypotheses to fill gaps
-    4. Score hypotheses by plausibility
-    5. Return combined results with confidence indicators
-    """
-    # Get verified results
-    hard_results = self._execute_hard_query(plan)
-    
-    # Identify missing connections
-    gaps = self._identify_gaps(hard_results, plan)
-    
-    # Generate hypotheses for each gap
-    hypotheses = []
-    for gap in gaps:
-        hypothesis = await self._generate_hypothesis(gap)
-        hypotheses.append(hypothesis)
-    
-    # Combine and rank
-    combined = self._merge_results(hard_results, hypotheses)
-    
-    return QueryResults(
-        nodes=combined.nodes,
-        paths=combined.paths,
-        evidence=combined.evidence,
-        hypotheses=hypotheses,
-        mode="soft"
-    )
+*Part B: Corpus-derived pairs (coverage)*
+For each extracted triple `(gene_A, ACTIVATES/REPRESSES/REGULATES, gene_B)` from the KG, generate a QA pair grounded in the source abstract. This tests breadth of coverage beyond the curated set.
 
-async def _generate_hypothesis(self, gap: Gap) -> Hypothesis:
-    """
-    Generate plausible relationship for missing edge.
-    
-    Uses:
-    1. Graph embeddings for semantic similarity
-    2. Path patterns (if A->B and B->C, maybe A->C?)
-    3. LLM reasoning over local graph context
-    """
-    # Get local subgraph around gap
-    context_subgraph = self._get_local_context(gap.source, gap.target, hops=2)
-    
-    # Ask LLM to hypothesize relationship
-    prompt = f"""
-    Given this local knowledge graph context:
-    {context_subgraph.to_text()}
-    
-    Is there a plausible relationship between {gap.source} and {gap.target}?
-    If so, what type of relationship and why?
-    
-    Provide:
-    1. Relationship type (or "none")
-    2. Confidence (0-1)
-    3. Reasoning based on graph patterns
-    """
-    
-    response = await self.client.messages.create(
-        model="claude-sonnet-4-20250514",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=1024
-    )
-    
-    hypothesis_data = self._parse_hypothesis_response(response)
-    
-    # Store hypothesis in graph
-    if hypothesis_data['relationship_type'] != "none":
-        self.graph.hypothetical_edges.add_hypothetical_edge(
-            gap.source.id,
-            gap.target.id,
-            hypothesis_data['relationship_type'],
-            hypothesis_data['confidence'],
-            hypothesis_data['reasoning']
-        )
-    
-    return Hypothesis(**hypothesis_data)
-```
+RAGAS is run over both parts. Part A scores reflect accuracy against known ground truth; Part B scores reflect internal consistency of extraction.
 
-#### Multi-Hop Reasoning
+**Benchmark construction:** Semi-automated. LLM generates candidate QA pairs; human spot-checks a sample, especially for Part A where answer correctness matters most.
 
-```python
-class MultiHopReasoner:
-    """
-    Traverse multi-hop paths to answer complex queries.
-    """
-    def __init__(self, graph_db, max_hops: int = 5):
-        self.graph = graph_db
-        self.max_hops = max_hops
-    
-    def find_paths(self, source_id: str, target_id: str, 
-                   relationship_types: List[str] = None) -> List[Path]:
-        """
-        Find all paths between source and target within max_hops.
-        
-        Example:
-        Question: "How does vitamin D affect bone density?"
-        Path: (VitaminD)-[:ACTIVATES]->(VDR)-[:REGULATES]->(RANKL)
-              -[:INHIBITS]->(Osteoclast)-[:AFFECTS]->(BoneDensity)
-        """
-        cypher = """
-        MATCH path = (source {id: $source_id})-[*1..%d]-(target {id: $target_id})
-        WHERE ALL(r IN relationships(path) WHERE type(r) IN $rel_types OR $rel_types IS NULL)
-        RETURN path, 
-               [r IN relationships(path) | r.confidence] AS confidences,
-               reduce(conf = 1.0, c IN [r IN relationships(path) | r.confidence] | conf * c) AS path_confidence
-        ORDER BY path_confidence DESC
-        LIMIT 10
-        """ % self.max_hops
-        
-        with self.graph.driver.session() as session:
-            results = session.run(
-                cypher,
-                source_id=source_id,
-                target_id=target_id,
-                rel_types=relationship_types
-            )
-            
-            return [self._path_from_record(r) for r in results]
-    
-    def explain_path(self, path: Path) -> str:
-        """Generate natural language explanation of a multi-hop path"""
-        pass
-```
+### 6.2 Track 2: Knowledge Discovery (Masked Prediction)
+
+**Goal:** Measure how well the system infers regulatory edges that are not explicitly stated in any retrieved context — i.e., genuine discovery from indirect signal.
+
+**Setup:**
+1. Build the full KG from the entire corpus
+2. Randomly mask a held-out set of edges (e.g., 10–20% of `ACTIVATES`/`REPRESSES` edges) — removed from the KG before the discovery system sees it
+3. Run the discovery system on the incomplete KG; it predicts missing edges
+4. Evaluate predictions against the held-out ground truth
+
+**Critical constraint: KG-only access**
+The discovery system must operate solely on the knowledge graph — no access to raw abstracts or the vector store. This is essential to ensure the task is genuinely about inferring missing structure from graph topology and metadata, not re-reading the evidence that was used to build the graph. Allowing corpus access would let the system trivially recover masked edges by finding the original supporting text.
+
+**Configurable Reference Mode**
+
+The broader query/reasoning system (outside of the masked prediction eval) is configurable via a `reference_mode` parameter:
+
+| Mode | Reference Source | Use Case |
+|---|---|---|
+| `corpus` | Raw abstract corpus (RAG only) | Baseline: what can we get from text alone? |
+| `kg` | Knowledge graph only | Graph-based reasoning; used for discovery eval |
+| `hybrid` | Both corpus + KG | Full system; expected best performance |
+
+The masked prediction benchmark always uses `kg` mode to maintain eval integrity. The `hybrid` mode is the default for the deployed query interface.
+
+**Masking Strategy:**
+- Mask edges, not nodes (retain node existence)
+- Stratify by `paper_count`: confidence threshold determined empirically from the distribution across all edges. Low-support edges excluded from test set (likely noisy); high-support edges are candidates for masking.
+- Separate validation and test splits to avoid overfitting discovery heuristics
+
+**Discovery Approaches (progressive):**
+1. **Graph topology heuristics** — common neighbors, Jaccard similarity, Adamic-Adar (interpretable baseline)
+2. **LLM-based reasoning** — prompt Claude with the partial KG neighborhood and node/edge metadata only; no raw text
+3. **Embedding-based methods** — node2vec embeddings + cosine similarity; later graph neural network approaches (e.g., GraphSAGE, TransE for KG-specific embedding)
+
+The progression from topology → LLM → embeddings → GNNs is deliberate: each step adds complexity and we want to understand what each buys us in terms of Hits@K before investing in more sophisticated models.
+
+**Metrics:**
+| Metric | Description |
+|---|---|
+| Hits@K | Is the true edge in the top-K predictions? |
+| MRR | Mean reciprocal rank of correct predictions |
+| Precision@K | Fraction of top-K predictions that are correct |
+| AUC-ROC | Overall discrimination ability |
 
 ---
 
-### 5. Agent Policy System
+## 7. Implementation Phases
 
-#### Policy Representation
+### Phase 1: Corpus + Extraction Pipeline
+- [ ] Add LangChain deps (`langchain`, `langchain-anthropic`, `langchain-neo4j`, `ragas`, `chromadb`)
+- [ ] Implement `src/corpus/` — PubMed retriever, parameterized by species
+- [ ] Implement `src/extraction/` — LCEL extraction chain with Pydantic models
+- [ ] Implement `src/graph/` — Neo4j loader with gene name deduplication
+- [ ] Notebook: inspect first batch of extractions for one species
 
-```python
-class AgentPolicy:
-    """
-    Human-readable markdown file encoding agent's reasoning strategy.
-    """
-    def __init__(self, policy_file: str):
-        self.policy_file = policy_file
-        self.version = 1
-        self.strategies = {}
-        self.load()
-    
-    def load(self):
-        """Parse markdown policy file into structured strategies"""
-        with open(self.policy_file, 'r') as f:
-            content = f.read()
-            self.strategies = self._parse_policy_markdown(content)
-    
-    def _parse_policy_markdown(self, content: str) -> dict:
-        """
-        Parse policy markdown into actionable strategies.
-        
-        Expected format:
-        # Agent Policy v1
-        
-        ## Query Planning Strategy
-        - For gene regulation queries, prioritize tissue-specific contexts
-        - When entities are ambiguous, explore all candidates in parallel
-        
-        ## Hypothesis Generation Strategy
-        - Use path transitivity for activation/inhibition chains
-        - Require at least 2 intermediate nodes for long-range predictions
-        - Weight semantic similarity at 0.3, structural similarity at 0.7
-        
-        ## Confidence Calibration
-        - Direct edges: baseline 0.8
-        - 2-hop inference: multiply confidences, apply 0.9 penalty
-        - 3+ hop inference: multiply confidences, apply 0.7 penalty
-        """
-        pass
-    
-    def update_strategy(self, strategy_name: str, new_content: str):
-        """Update specific strategy and increment version"""
-        self.strategies[strategy_name] = new_content
-        self.version += 1
-        self.save()
-    
-    def save(self):
-        """Write updated policy back to markdown file"""
-        pass
-```
+### Phase 2: RAG Evaluation (Track 1)
+- [ ] Build vector index over abstract corpus
+- [ ] Auto-generate QA benchmark from extracted triples
+- [ ] Implement RAG pipeline
+- [ ] Run RAGAS evaluation; establish baseline scores
 
-#### Example Policy File
+### Phase 3: Masked Prediction Benchmark (Track 2)
+- [ ] Implement edge masking framework
+- [ ] Implement baseline link prediction (topology heuristics)
+- [ ] Implement LLM-based edge prediction
+- [ ] Evaluate against held-out masked edges; compute Hits@K, MRR
 
-```markdown
-# Knowledge Graph Query Agent Policy
-**Version:** 3  
-**Last Updated:** 2026-02-10  
-**Performance Score:** 0.78 (avg across 50 test cases)
+### Phase 4: Full Text Upgrade Study
+- [ ] Add PMC Open Access full-text retrieval
+- [ ] Re-run extraction pipeline on full text corpus
+- [ ] Re-run both evaluation tracks (Track 1 + Track 2)
+- [ ] Report delta in RAGAS scores and Hits@K vs. abstract-only baseline
+- [ ] Cost/benefit analysis: additional compute + API cost vs. metric gains
 
-## Query Planning Strategy
-
-### Entity Resolution
-- When gene names are ambiguous (e.g., "p53"), query both gene and protein nodes
-- Prioritize species-specific entities based on query context
-- If no species specified, default to human (Homo sapiens)
-
-### Path Exploration
-- For regulatory queries, explore both direct and 2-hop paths
-- For expression queries, filter by tissue/cell-type context before traversal
-- Maximum path length: 4 hops (diminishing returns beyond this)
-
-### Context Filtering
-- Tissue context: always apply if mentioned in query
-- Experimental method: use to boost confidence, not filter
-- Species: hard filter (don't mix species unless explicitly comparative)
-
-## Hypothesis Generation Strategy
-
-### When to Generate Hypotheses
-- Gap exists in 2-hop path (A->B and B->C known, A->C missing)
-- Semantic similarity between source and target > 0.6
-- At least 3 common neighbors in the graph
-
-### Hypothesis Scoring
-```
-confidence = 0.3 * semantic_similarity 
-           + 0.4 * structural_similarity
-           + 0.3 * literature_cooccurrence
-```
-
-### Path Transitivity Rules
-- Activation + Activation → Activation (confidence * 0.9)
-- Activation + Inhibition → Inhibition (confidence * 0.9)
-- Inhibition + Inhibition → Activation (confidence * 0.8)
-- Mixed/Unknown → No inference
-
-### Validation Priorities
-- Prioritize hypotheses with confidence > 0.6 for validation
-- Validate at most 5 hypotheses per query to control latency
-
-## Confidence Calibration
-
-### Baseline Confidences
-- Direct edge from single high-quality paper: 0.7
-- Direct edge from multiple papers: min(0.95, 0.7 + 0.1 * (num_papers - 1))
-- 2-hop inference: product of edge confidences * 0.9
-- 3-hop inference: product of edge confidences * 0.7
-- 4-hop inference: product of edge confidences * 0.5
-
-### Context Boost/Penalty
-- Matching tissue context: +0.1 confidence
-- Matching cell type: +0.05 confidence
-- Direct experimental observation: +0.15 confidence
-- Computational prediction only: -0.2 confidence
-
-## Test Case Generation Strategy
-
-### Edge Masking Selection
-- Randomly mask 10% of edges with confidence > 0.8
-- Preferentially mask edges with multiple papers (harder to rediscover)
-- Ensure masked edges span diverse relationship types
-
-### Success Criteria
-- "Perfect" recovery: predicted exact relationship type, confidence within 0.1
-- "Good" recovery: predicted compatible relationship type, confidence within 0.2
-- "Acceptable" recovery: identified connection exists, any relationship type
-
-### Learning from Failures
-- When failing to rediscover edge, analyze:
-  1. Was the information present in local context?
-  2. Did semantic similarity suggest connection?
-  3. What additional context would have helped?
-- Update strategy if pattern of failures detected
-
-## Performance Insights
-
-### What Works Well
-- Path transitivity for activation/inhibition chains (92% recovery rate)
-- Tissue-specific filtering reduces noise significantly
-- Semantic similarity effective for gene-pathway associations
-
-### Current Weaknesses
-- Struggles with indirect regulation (cofactors, scaffolding proteins)
-- Overconfident on 3-hop paths (should reduce penalty further)
-- Misses context-dependent relationships (need better context encoding)
-
-### Planned Improvements
-- Incorporate temporal dynamics (gene expression timing)
-- Add support for negative evidence (explicitly contradicted relationships)
-- Experiment with graph neural network embeddings for similarity
-```
-
-#### Policy Competition Framework
-
-```python
-class PolicyCompetition:
-    """
-    Pit multiple agent policies against each other on test cases.
-    Track performance and evolve best strategies.
-    """
-    def __init__(self, graph_db, test_suite: TestSuite):
-        self.graph = graph_db
-        self.test_suite = test_suite
-        self.agents = []
-    
-    def register_agent(self, agent: KnowledgeGraphQueryAgent):
-        """Add agent to competition"""
-        self.agents.append(agent)
-    
-    async def run_competition(self) -> CompetitionResults:
-        """
-        Run all agents on full test suite, collect metrics.
-        """
-        results = {}
-        
-        for agent in self.agents:
-            agent_results = []
-            
-            for test_case in self.test_suite.cases:
-                # Mask edges as specified by test case
-                self.graph.apply_mask(test_case.masked_edges)
-                
-                # Run agent query
-                answer = await agent.answer_query(
-                    test_case.query,
-                    mode=test_case.mode
-                )
-                
-                # Evaluate against ground truth
-                score = self._evaluate_answer(answer, test_case.expected)
-                agent_results.append(score)
-                
-                # Restore graph
-                self.graph.remove_mask()
-            
-            results[agent.policy.policy_file] = {
-                'scores': agent_results,
-                'mean_score': np.mean(agent_results),
-                'median_score': np.median(agent_results),
-                'policy_version': agent.policy.version
-            }
-        
-        # Rank agents
-        ranked = sorted(results.items(), key=lambda x: x[1]['mean_score'], reverse=True)
-        
-        return CompetitionResults(ranked)
-    
-    def _evaluate_answer(self, answer: Answer, expected: GroundTruth) -> float:
-        """
-        Score answer against ground truth.
-        
-        Metrics:
-        - Entity precision/recall
-        - Relationship accuracy
-        - Confidence calibration (Brier score)
-        - Reasoning quality (human eval placeholder)
-        """
-        pass
-```
+### Phase 5: Iteration & Improvement
+- [ ] Improve extraction prompts based on Track 1 failures
+- [ ] Improve discovery methods based on Track 2 failures (embeddings, GNNs)
+- [ ] Add second species for cross-species evaluation
+- [ ] MLflow experiment tracking throughout
 
 ---
 
-## Data Models
+## 8. Technology Stack
 
-### Core Data Structures
-
-```python
-from dataclasses import dataclass
-from typing import List, Optional, Dict, Any
-from datetime import datetime
-
-@dataclass
-class Paper:
-    """Represents a scientific paper in the corpus"""
-    id: str  # DOI or unique identifier
-    title: str
-    authors: List[str]
-    abstract: str
-    full_text: Optional[str]
-    publication_date: datetime
-    venue: str  # Journal/conference name
-    source: str  # "pubmed", "scholar", "biorxiv", etc.
-    metadata: Dict[str, Any]
-    
-    def __hash__(self):
-        return hash(self.id)
-
-@dataclass
-class Entity:
-    """Represents a biological entity extracted from text"""
-    id: str
-    name: str
-    type: str  # "Gene", "RNA", "Protein", etc.
-    aliases: List[str]
-    confidence: float
-    source_paper: str
-    source_sentence: str
-    attributes: Dict[str, Any]
-
-@dataclass
-class Relationship:
-    """Represents a relationship between two entities"""
-    id: str
-    source_entity: str
-    target_entity: str
-    type: str  # "activates", "inhibits", etc.
-    confidence: float
-    evidence: List[str]  # Paper IDs
-    context: Dict[str, Any]  # tissue, cell_type, condition, etc.
-    is_hypothetical: bool
-    version: int
-
-@dataclass
-class ExtractionResult:
-    """Result from entity extraction on a paper"""
-    paper_id: str
-    entities: List[Entity]
-    relationships: List[Relationship]
-    extraction_timestamp: datetime
-    model_version: str
-
-@dataclass
-class QueryPlan:
-    """Structured representation of a graph query"""
-    entity_targets: List[Dict[str, Any]]  # Entities to find
-    path_patterns: List[Dict[str, Any]]  # Relationship patterns to match
-    filters: Dict[str, Any]  # Confidence, context filters
-    aggregation: str  # How to combine results
-    parameters: Dict[str, Any]
-    
-    @classmethod
-    def from_json(cls, json_str: str) -> 'QueryPlan':
-        pass
-
-@dataclass
-class Path:
-    """A multi-hop path through the knowledge graph"""
-    nodes: List[Entity]
-    edges: List[Relationship]
-    total_confidence: float
-    explanation: str
-
-@dataclass
-class Hypothesis:
-    """A hypothesized relationship"""
-    source_id: str
-    target_id: str
-    relationship_type: str
-    confidence: float
-    reasoning: str
-    supporting_paths: List[Path]
-    validation_status: Optional[bool]
-
-@dataclass
-class QueryResults:
-    """Results from a knowledge graph query"""
-    nodes: List[Entity]
-    paths: List[Path]
-    evidence: List[Dict[str, Any]]
-    hypotheses: Optional[List[Hypothesis]]
-    mode: str  # "hard" or "soft"
-    execution_time: float
-
-@dataclass
-class Answer:
-    """Final answer to user query"""
-    query: str
-    response: str
-    results: QueryResults
-    reasoning_trace: List[str]
-    confidence: float
-```
+| Component | Technology |
+|---|---|
+| Language | Python 3.11+ |
+| Package management | uv |
+| LLM | Anthropic Claude (claude-sonnet-4-6 for extraction, claude-opus-4-6 for reasoning) |
+| LLM Framework | LangChain LCEL |
+| Graph DB | Neo4j 5.14+ |
+| Document Store | MongoDB 7.0 |
+| Vector Store | Chroma (local) → Pinecone (if scale needed) |
+| RAG Evaluation | RAGAS |
+| Literature Retrieval | biopython (Entrez/PubMed) |
+| Data Validation | Pydantic v2 |
+| Experiment Tracking | MLflow |
+| Containerization | Docker Compose |
+| Testing | pytest |
 
 ---
 
-## Evaluation Framework
-
-### Test Suite Design
-
-```python
-class TestCase:
-    """Single test case for agent evaluation"""
-    def __init__(self, 
-                 query: str,
-                 expected_result: GroundTruth,
-                 masked_edges: List[str],
-                 difficulty: str):
-        self.query = query
-        self.expected = expected_result
-        self.masked_edges = masked_edges
-        self.difficulty = difficulty  # "easy", "medium", "hard"
-
-class TestSuite:
-    """Collection of test cases for agent evaluation"""
-    def __init__(self):
-        self.cases = []
-    
-    def add_case(self, test_case: TestCase):
-        self.cases.append(test_case)
-    
-    @classmethod
-    def generate_from_graph(cls, graph_db, num_cases: int = 100) -> 'TestSuite':
-        """
-        Automatically generate test cases from existing high-confidence edges.
-        
-        Strategy:
-        1. Sample edges with confidence > 0.8
-        2. Create query that should discover this edge
-        3. Mask the edge (and optionally nearby edges for difficulty)
-        4. Define expected result
-        """
-        suite = cls()
-        
-        # Get high-confidence edges
-        high_conf_edges = graph_db.get_edges_by_confidence(min_conf=0.8, limit=num_cases)
-        
-        for edge in high_conf_edges:
-            # Create query
-            query = cls._generate_query_for_edge(edge)
-            
-            # Determine difficulty and masking strategy
-            if random.random() < 0.3:  # 30% hard cases
-                masked = cls._create_hard_mask(graph_db, edge)
-                difficulty = "hard"
-            elif random.random() < 0.5:  # 35% medium cases
-                masked = cls._create_medium_mask(graph_db, edge)
-                difficulty = "medium"
-            else:  # 35% easy cases
-                masked = [edge.id]
-                difficulty = "easy"
-            
-            # Define expected result
-            expected = GroundTruth(
-                should_find_edge=True,
-                edge_type=edge.type,
-                confidence_range=(edge.confidence - 0.2, edge.confidence + 0.2)
-            )
-            
-            suite.add_case(TestCase(query, expected, masked, difficulty))
-        
-        return suite
-    
-    @staticmethod
-    def _generate_query_for_edge(edge: Relationship) -> str:
-        """
-        Generate natural language query for an edge.
-        
-        Examples:
-        - Gene activation: "What activates {target_gene}?"
-        - Regulation: "How is {target_gene} regulated in {tissue}?"
-        - Pathway: "What genes are involved in {pathway}?"
-        """
-        pass
-    
-    @staticmethod
-    def _create_hard_mask(graph_db, edge: Relationship) -> List[str]:
-        """
-        Mask edge plus nearby supporting evidence.
-        Forces agent to use multi-hop reasoning or semantic similarity.
-        """
-        pass
-```
-
-### Evaluation Metrics
-
-```python
-class EvaluationMetrics:
-    """Compute metrics for agent performance"""
-    
-    @staticmethod
-    def entity_precision_recall(predicted: List[Entity], 
-                                expected: List[Entity]) -> Dict[str, float]:
-        """Standard precision/recall for entity extraction"""
-        predicted_ids = set(e.id for e in predicted)
-        expected_ids = set(e.id for e in expected)
-        
-        tp = len(predicted_ids & expected_ids)
-        fp = len(predicted_ids - expected_ids)
-        fn = len(expected_ids - predicted_ids)
-        
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
-        
-        return {'precision': precision, 'recall': recall, 'f1': f1}
-    
-    @staticmethod
-    def relationship_accuracy(predicted: List[Relationship],
-                             expected: List[Relationship]) -> float:
-        """
-        Score relationship predictions.
-        
-        Scoring:
-        - Exact match (same type, close confidence): 1.0
-        - Compatible type (e.g., "regulates" vs "activates"): 0.5
-        - Wrong type: 0.0
-        """
-        pass
-    
-    @staticmethod
-    def confidence_calibration(predictions: List[Tuple[float, bool]]) -> float:
-        """
-        Brier score for confidence calibration.
-        
-        predictions: list of (predicted_confidence, was_correct)
-        Lower is better (perfect calibration = 0)
-        """
-        brier_score = np.mean([
-            (conf - float(correct))**2 
-            for conf, correct in predictions
-        ])
-        return brier_score
-    
-    @staticmethod
-    def hypothesis_quality(hypotheses: List[Hypothesis],
-                          ground_truth: List[Relationship]) -> Dict[str, float]:
-        """
-        Evaluate quality of generated hypotheses.
-        
-        Metrics:
-        - Precision: % of hypotheses that are correct
-        - Recall: % of discoverable relationships found
-        - Calibration: correlation between confidence and correctness
-        """
-        pass
-```
-
-### Automated Test Case Generation
-
-```python
-class AutomatedTestGenerator:
-    """
-    Agents generate their own creative test cases.
-    """
-    def __init__(self, graph_db, agent: KnowledgeGraphQueryAgent):
-        self.graph = graph_db
-        self.agent = agent
-    
-    async def generate_test_case(self) -> TestCase:
-        """
-        Ask agent to propose an interesting test case.
-        
-        Agent should:
-        1. Identify interesting graph pattern
-        2. Formulate query that tests specific reasoning capability
-        3. Propose masking strategy
-        4. Define expected behavior
-        """
-        prompt = """
-        Analyze the current knowledge graph and propose a creative test case.
-        
-        Your test case should:
-        - Target a specific reasoning capability (multi-hop inference, context sensitivity, etc.)
-        - Be challenging but solvable
-        - Help identify weaknesses in current policies
-        
-        Output format:
-        {
-            "query": "Natural language question",
-            "reasoning_required": "What makes this hard?",
-            "edges_to_mask": ["edge_id_1", "edge_id_2"],
-            "expected_approach": "How should this be solved?",
-            "difficulty": "easy|medium|hard"
-        }
-        """
-        
-        response = await self.agent.client.messages.create(
-            model="claude-sonnet-4-20250514",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2048
-        )
-        
-        test_data = json.loads(response.content[0].text)
-        
-        return TestCase(
-            query=test_data['query'],
-            expected_result=self._infer_expected_result(test_data),
-            masked_edges=test_data['edges_to_mask'],
-            difficulty=test_data['difficulty']
-        )
-```
-
-### MLflow Integration
-
-```python
-import mlflow
-
-class ExperimentTracker:
-    """Track agent experiments with MLflow"""
-    
-    def __init__(self, experiment_name: str = "kg-agent-policies"):
-        mlflow.set_experiment(experiment_name)
-    
-    def log_agent_run(self, agent: KnowledgeGraphQueryAgent,
-                     test_results: Dict[str, Any],
-                     policy_file: str):
-        """
-        Log agent performance as MLflow run.
-        """
-        with mlflow.start_run(run_name=f"policy_v{agent.policy.version}"):
-            # Log parameters
-            mlflow.log_param("policy_file", policy_file)
-            mlflow.log_param("policy_version", agent.policy.version)
-            mlflow.log_param("model", agent.client.model)
-            
-            # Log metrics
-            mlflow.log_metric("mean_score", test_results['mean_score'])
-            mlflow.log_metric("median_score", test_results['median_score'])
-            mlflow.log_metric("test_cases_count", len(test_results['scores']))
-            
-            # Log policy file as artifact
-            mlflow.log_artifact(policy_file)
-            
-            # Log detailed results
-            mlflow.log_dict(test_results, "detailed_results.json")
-    
-    def compare_policies(self, run_ids: List[str]) -> pd.DataFrame:
-        """Generate comparison table of different policy runs"""
-        pass
-```
-
----
-
-## Implementation Phases
-
-### Phase 0: Project Setup ✅ COMPLETE (March 10, 2026)
-
-**Goals:**
-- Set up development environment
-- Initialize repository structure
-- Configure local graph database
-- Establish basic CI/CD
-
-**Completed:**
-- `uv`-managed Python 3.11+ project initialized
-- Docker Compose with Neo4j 5.14 + MongoDB 7.0 — both containers running and smoke-tested
-- All initial Python dependencies installed and verified:
-  - `neo4j>=5.14`, `pymongo>=4.6`, `python-dotenv>=1.0`
-  - `anthropic>=0.34`, `biopython>=1.83`, `pydantic>=2.6`, `requests>=2.31`
-- `.env` / `.env.example` scaffolding in place
-- LangChain dependency deferred to Phase 1 when first chain is built
-
-**Project structure (actual):**
-```
-llm-knowledge-discovery/
-├── src/                 # Application code (to be populated Phase 1+)
-├── doc/                 # Tech spec and design docs
-├── notebooks/           # Exploratory analysis
-├── .data/              # Raw datasets (gitignored)
-├── .models/            # Saved artifacts (gitignored)
-├── .claude/            # Session notes (gitignored)
-├── docker-compose.yml  # Neo4j + MongoDB
-├── .env                # Local credentials (gitignored)
-├── .env.example        # Committed placeholder
-└── pyproject.toml      # uv project + dependencies
-```
-
----
-
-### Phase 1: Minimal Viable Prototype (Weeks 2-4)
-
-**Goal:** End-to-end pipeline on toy dataset
-
-**Scope:**
-- **Corpus:** 100 papers from PubMed on BRCA1/BRCA2 gene regulation
-- **Schema:** Fixed initial GRN schema (genes, RNAs, basic regulation)
-- **Query:** Hard queries only (no hypothesis generation)
-- **Evaluation:** Manual verification of extracted entities
-
-**Deliverables:**
-1. **Literature Retrieval:** Script to fetch 100 PubMed abstracts
-2. **Entity Extraction:** LLM-based extraction with structured output
-3. **Graph Construction:** Load entities/relationships into Neo4j
-4. **Basic Query Agent:** Answer simple queries via Cypher generation
-5. **Validation:** Human review of 20 extracted relationships
-
-**Success Criteria:**
-- 100 papers successfully retrieved and deduplicated
-- >80% precision on entity extraction (manual eval on 50 entities)
-- Agent correctly answers 8/10 simple factual queries
-- Graph visualization shows connected components
-
-**Code Example:**
-```python
-# Minimal extraction pipeline
-async def mvp_pipeline():
-    # Step 1: Retrieve papers
-    retriever = PubMedRetriever()
-    papers = retriever.search_biomedical("BRCA1 regulation", max_results=100)
-    
-    # Step 2: Extract entities
-    extractor = EntityExtractionAgent()
-    results = []
-    for paper in papers:
-        result = await extractor.extract_entities(paper.abstract)
-        results.append(result)
-    
-    # Step 3: Build graph
-    graph = Neo4jGraph("bolt://localhost:7687")
-    for result in results:
-        graph.add_entities(result.entities)
-        graph.add_relationships(result.relationships)
-    
-    # Step 4: Query
-    agent = KnowledgeGraphQueryAgent(graph)
-    answer = await agent.answer_query(
-        "What genes activate BRCA1?",
-        mode="hard"
-    )
-    
-    print(answer.response)
-```
-
----
-
-### Phase 2: Schema Evolution & Scalability (Weeks 5-7)
-
-**Goal:** Scale to 1000+ papers with evolving schema
-
-**Enhancements:**
-- Expand corpus to 1,000 papers (broader gene regulation topics)
-- Implement schema evolution manager
-- Add batch processing for extraction
-- Introduce versioning for graph
-- Add provenance tracking
-
-**Deliverables:**
-1. **Corpus Manager:** Scheduled updates, deduplication across sources
-2. **Schema Evolution:** Automatic discovery of new entity/relationship types
-3. **Batch Processing:** Parallel extraction with error handling
-4. **Versioning:** Delta-based graph versioning
-5. **Provenance:** Link every entity/relationship to source papers
-
-**Success Criteria:**
-- Process 1,000 papers in <24 hours
-- Schema discovers >5 new entity types beyond initial set
-- Versioning successfully reconstructs graph at previous states
-- Every relationship traceable to source sentence
-
-**Key Challenges:**
-- Rate limiting on Anthropic API (need batching strategy)
-- Schema drift (how to merge similar entity types?)
-- Graph size management (indexing, query optimization)
-
----
-
-### Phase 3: Multi-Hop Reasoning & Soft Queries (Weeks 8-10)
-
-**Goal:** Enable complex reasoning with hypothesis generation
-
-**Enhancements:**
-- Implement multi-hop path finding
-- Add hypothesis generation for missing edges
-- Introduce soft query mode
-- Build initial policy file
-
-**Deliverables:**
-1. **Multi-Hop Reasoner:** Find paths up to 5 hops
-2. **Hypothesis Generator:** LLM-based edge prediction
-3. **Soft Query Mode:** Combine verified edges + hypotheses
-4. **Policy v1:** Initial markdown policy encoding reasoning strategies
-
-**Success Criteria:**
-- Agent answers 7/10 multi-hop questions correctly
-- Hypotheses have >0.6 average confidence on validation set
-- Policy file is human-readable and modifiable
-
-**Example Queries:**
-- "How does vitamin D affect calcium absorption in the gut?"
-- "What pathways connect TP53 to apoptosis in liver cells?"
-- "Can you explain the link between BRCA1 and DNA repair?"
-
----
-
-### Phase 4: Evaluation & Agent Competition (Weeks 11-13)
-
-**Goal:** Automated testing and policy evolution
-
-**Enhancements:**
-- Build automated test suite (100+ test cases)
-- Implement edge masking for validation
-- Create policy competition framework
-- Integrate MLflow for experiment tracking
-
-**Deliverables:**
-1. **Test Suite:** 100 auto-generated test cases from graph
-2. **Edge Masking:** Validation system for hypothesis testing
-3. **Policy Competition:** Framework to compare multiple policies
-4. **MLflow Integration:** Track all experiments and metrics
-
-**Success Criteria:**
-- Test suite covers easy/medium/hard cases
-- Agent recovers >70% of masked edges (medium difficulty)
-- Policy competition identifies best strategy from 3+ variants
-- All runs logged in MLflow with reproducible results
-
-**Policy Evolution Example:**
-```markdown
-# Policy v1
-- Use 2-hop paths for regulation queries
-- Confidence threshold: 0.5
-
-# Policy v2 (after competition)
-- Use 3-hop paths (improved recall from 0.65 to 0.72)
-- Confidence threshold: 0.6 (reduced false positives)
-- Add tissue-context filtering (precision +0.1)
-```
-
----
-
-### Phase 5: Production Deployment (Weeks 14-16)
-
-**Goal:** Cloud deployment with robust infrastructure
-
-**Enhancements:**
-- Dockerize all components
-- Deploy to GCP/AWS with Kubernetes
-- Set up monitoring and alerting
-- Add web API for external access
-
-**Deliverables:**
-1. **Docker Containers:** Each component containerized
-2. **K8s Deployment:** Production cluster configuration
-3. **API Gateway:** REST API for queries
-4. **Monitoring:** Prometheus + Grafana dashboards
-5. **Documentation:** Deployment guide and API docs
-
-**Success Criteria:**
-- System handles 100 concurrent queries with <5s latency
-- Automated daily corpus updates
-- 99% uptime over 1 week
-- API documented with OpenAPI spec
-
-**Infrastructure:**
-```yaml
-# Kubernetes deployment
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: kg-query-agent
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: kg-agent
-  template:
-    spec:
-      containers:
-      - name: query-agent
-        image: kg-agent:latest
-        env:
-        - name: NEO4J_URI
-          value: "bolt://neo4j-service:7687"
-        - name: ANTHROPIC_API_KEY
-          valueFrom:
-            secretKeyRef:
-              name: api-keys
-              key: anthropic
-```
-
----
-
-### Phase 6: Advanced Features & Research (Ongoing)
-
-**Goal:** Cutting-edge capabilities and research exploration
-
-**Potential Enhancements:**
-- Graph neural networks for better entity embeddings
-- Temporal dynamics (gene expression timing)
-- Negative evidence (contradicted relationships)
-- Cross-domain transfer (apply to different scientific domains)
-- Interactive visualization dashboard
-- Reinforcement learning for policy optimization
-
-**Research Questions:**
-- Can agents learn to ask clarifying questions?
-- How does graph structure affect hypothesis quality?
-- Can we predict which papers to read next for maximum information gain?
-- What's the optimal balance between extraction quality and corpus size?
-
----
-
-## Infrastructure Requirements
-
-### Local Development Environment
-
-**Hardware:**
-- **CPU:** 8+ cores (for parallel processing)
-- **RAM:** 32GB+ (Neo4j + embeddings + LLM inference)
-- **Storage:** 500GB SSD (corpus + graph + embeddings)
-- **GPU:** Optional (for open-source LLM inference)
-
-**Software:**
-- **OS:** Linux (Ubuntu 22.04) or macOS
-- **Python:** 3.11+
-- **Docker:** 24.0+
-- **Git:** 2.40+
-
-**Services (via Docker Compose — see `docker-compose.yml`):**
-```yaml
-services:
-  neo4j:
-    image: neo4j:5.14
-    container_name: llm-kg-neo4j
-    ports:
-      - "7474:7474"   # HTTP browser UI
-      - "7687:7687"   # Bolt protocol
-    environment:
-      - NEO4J_AUTH=${NEO4J_USER}/${NEO4J_PASSWORD}
-    volumes:
-      - neo4j_data:/data
-    restart: unless-stopped
-
-  mongodb:
-    image: mongo:7.0
-    container_name: llm-kg-mongodb
-    ports:
-      - "27017:27017"
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER}
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD}
-    volumes:
-      - mongo_data:/data/db
-    restart: unless-stopped
-
-volumes:
-  neo4j_data:
-  mongo_data:
-```
-
-> **Note:** Credentials are loaded from `.env`. Neo4j password must be 8+ chars. MongoDB init vars only apply on first start (empty volume). To reset: `docker compose down -v`.
-
-### Cloud Deployment (Production)
-
-**Cloud Provider:** GCP (can adapt to AWS/Azure)
-
-**Resources:**
-- **Compute:** 
-  - 3x n1-standard-8 (query agents): 8 vCPU, 30GB RAM each
-  - 1x n1-standard-16 (extraction pipeline): 16 vCPU, 60GB RAM
-- **Storage:**
-  - Cloud Storage: 1TB for corpus
-  - Persistent Disk SSD: 500GB for Neo4j
-- **Database:**
-  - Neo4j Aura (managed): Professional tier
-  - MongoDB Atlas: M30 cluster
-
-**Estimated Costs (Monthly):**
-- Compute: ~$600
-- Storage: ~$100
-- Managed Databases: ~$400
-- API Calls (Anthropic): ~$500-2000 (variable)
-- **Total: ~$1,600-3,100/month**
-
-**Cost Optimization Strategies:**
-- Use preemptible VMs for extraction pipeline (60-90% savings)
-- Implement aggressive caching for frequently queried paths
-- Use open-source LLMs for low-priority tasks
-- Archive old corpus versions to cheaper storage
-
----
-
-## Future Directions
-
-### Short-Term (Next 6 Months)
-
-1. **Multi-Modal Support:** Extract from figures, tables, supplementary materials
-2. **Interactive Query Refinement:** Agent asks clarifying questions
-3. **Confidence Explanation:** Detailed breakdown of why confidence is X
-4. **Batch Query Processing:** Handle multiple related queries efficiently
-
-### Medium-Term (6-12 Months)
-
-1. **Graph Neural Networks:** Learn better entity/relationship embeddings
-2. **Active Learning:** System suggests which papers to add to corpus next
-3. **Cross-Domain Transfer:** Apply to chemistry, materials science, etc.
-4. **Temporal Modeling:** Track how relationships evolve over time
-5. **Negative Evidence:** Explicitly model contradictions and uncertainties
-
-### Long-Term (1-2 Years)
-
-1. **Causal Inference:** Distinguish correlation from causation
-2. **Experimental Design:** Suggest experiments to test hypotheses
-3. **Automated Literature Review:** Generate comprehensive reviews of topics
-4. **Real-Time Updates:** Integrate with preprint servers for instant updates
-5. **Collaborative Curation:** Human experts can correct/enhance the graph
-
-### Research Opportunities
-
-1. **Optimal Graph Granularity:** What's the right level of detail for entities?
-2. **Uncertainty Quantification:** Better calibration of confidence scores
-3. **Explainability:** Can agents explain their reasoning to domain experts?
-4. **Transfer Learning:** How much does a GRN graph help with pathway analysis?
-5. **Adversarial Testing:** Can we fool agents with misleading evidence?
-
----
-
-## Appendix
-
-### A. Glossary
-
-- **Entity:** A biological object (gene, protein, cell type, etc.)
-- **Relationship:** A directed connection between entities
-- **Hard Query:** Uses only verified, high-confidence edges
-- **Soft Query:** Includes hypothesized edges and multi-hop inference
-- **Hypothesis:** A predicted relationship not explicitly in the literature
-- **Provenance:** Link from KG element back to source paper/sentence
-- **Schema Evolution:** Automatic discovery of new entity/relationship types
-- **Edge Masking:** Temporarily hiding edges to test agent reasoning
-- **Policy:** Human-readable strategy encoding how an agent reasons
-
-### B. References
-
-**Graph Databases:**
-- Neo4j Documentation: https://neo4j.com/docs/
-- Cypher Query Language: https://neo4j.com/docs/cypher-manual/
-
-**LLM Agents:**
-- Anthropic Claude API: https://docs.anthropic.com/
-- LangGraph: https://github.com/langchain-ai/langgraph
-
-**Scientific Literature APIs:**
-- PubMed E-utilities: https://www.ncbi.nlm.nih.gov/books/NBK25501/
-- Google Scholar (scholarly): https://scholarly.readthedocs.io/
-
-**Knowledge Graph Construction:**
-- "A Survey on Knowledge Graphs: Representation, Acquisition, and Applications" (IEEE 2021)
-- "Language Models as Knowledge Bases?" (EMNLP 2019)
-
-**Biomedical NLP:**
-- "PubMedBERT: Domain-Specific Language Representation" (EMNLP 2020)
-- "Extracting Biomedical Events from Literature" (ACL 2018)
-
-### C. Contact & Collaboration
-
-**Project Lead:** Dylan  
-**Status:** Active Development  
-**License:** TBD  
-**Contributing:** See CONTRIBUTING.md (to be created)
-
----
-
-**End of Technical Specification**
-
-*This document is a living specification and will be updated as the project evolves.*
+## 9. Resolved Decisions
+
+| Decision | Resolution |
+|---|---|
+| Species for Phase 1 | *Arabidopsis thaliana* |
+| Gene name authority | TAIR (canonical locus IDs); aliases retained on node |
+| Corpus MVP | PubMed abstracts only |
+| Full text | Added in Phase 4 as a controlled study; same metrics used for direct comparison |
+| Ground truth confidence threshold | Determined empirically from the `paper_count` distribution after KG is built; not hardcoded upfront |
+| Regulatory direction encoding | Typed relationships (`ACTIVATES`, `REPRESSES`, `REGULATES`); no separate `direction` property |
+| Edge provenance | `paper_ids[]` + `paper_count` properties on each edge; no `SUPPORTED_BY` relationship (not possible in Neo4j) |
+| Track 1 benchmark | Two-part: PlantRegMap gold-standard anchor (external ground truth) + corpus-derived pairs (coverage) |
+| Track 2 discovery access | KG-only; corpus access would allow trivial recovery of masked edges from source text |
+| Reference mode | Configurable: `corpus`, `kg`, or `hybrid`; masked prediction eval always uses `kg` |
+| Discovery methods | Progressive: topology baselines → LLM (KG-only) → node2vec → GNNs; each evaluated independently |
