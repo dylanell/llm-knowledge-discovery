@@ -4,6 +4,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## .claude/ Directory
+
+The .claude/ directory provides a spacee for Claude to store helpful files. Please read the contents of this directory to get caught up to speedd at the beginning of each session. 
+
+The `lessons.md` file contains important lessons to remember -- especially after making a mistake and noting the correction. 
+
+The `session_notes_<N>.md` files contain session notes from each session we have. Reading this in chronological order will give you the context of what we've done for each subsequent session. 
+
 ## Session Notes
 
 At the end of each session, write a session notes file to `.claude/session_notes_<N>.md` at the project root, where N is the next session number. 
