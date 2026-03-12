@@ -52,7 +52,7 @@ def _search_pubmed(query: str, max_results: int) -> list[str] | None:
         handle.close()
 
 
-def _parse_batch_xml(raw_xml: bytes, corpus_tag: str) -> list[PaperRecord]:
+def _parse_batch_xml(raw_xml: bytes, collection_name: str) -> list[PaperRecord]:
     """
     Parse a batch of PubMed XML records. Returns a list of PaperRecord objects,
     skipping any records that fail to parse.
@@ -84,7 +84,7 @@ def _parse_batch_xml(raw_xml: bytes, corpus_tag: str) -> list[PaperRecord]:
     # Order of Entrez.read articles and ET elements is guaranteed to match
     results = []
     for article, article_xml in zip(articles, article_xml_strings):
-        record = _parse_record(article, article_xml, corpus_tag)
+        record = _parse_record(article, article_xml, collection_name)
         if record is not None:
             results.append(record)
 
@@ -92,7 +92,7 @@ def _parse_batch_xml(raw_xml: bytes, corpus_tag: str) -> list[PaperRecord]:
 
 
 def _parse_record(
-    article: dict, raw_xml: str, corpus_tag: str
+    article: dict, raw_xml: str, collection_name: str
 ) -> PaperRecord | None:
     """
     Extract fields from a biopython-parsed PubmedArticle dict and return a
@@ -164,7 +164,7 @@ def _parse_record(
             authors=authors,
             year=year,
             journal=journal,
-            corpus_tag=corpus_tag,
+            collection_name=collection_name,
             fetched_at=datetime.now(timezone.utc),
             raw_xml=raw_xml,
         )
@@ -175,7 +175,7 @@ def _parse_record(
 
 
 def fetch_records(
-    query: str, max_results: int, corpus_tag: str, batch_size: int = 100
+    query: str, max_results: int, collection_name: str, batch_size: int = 100
 ) -> list[PaperRecord]:
     """
     Search PubMed and fetch parsed records. No MongoDB interaction —
@@ -184,7 +184,7 @@ def fetch_records(
     Args:
         query: Free-text PubMed search query (e.g. "BRCA1 breast cancer")
         max_results: Maximum number of results to fetch
-        corpus_tag: Label for this corpus (e.g. "arabidopsis", "brca1")
+        collection_name: MongoDB collection name (e.g. "arabidopsis_abstracts")
         batch_size: Number of records to fetch per Entrez request
 
     Returns:
@@ -196,7 +196,7 @@ def fetch_records(
 
     logger.info(
         f"{_MOD} Searching PubMed: '{query}' "
-        f"(max={max_results}, tag={corpus_tag})"
+        f"(max={max_results}, collection={collection_name})"
     )
     pubmed_ids = _search_pubmed(query, max_results)
 
@@ -221,7 +221,7 @@ def fetch_records(
             finally:
                 handle.close()
 
-            xml_records = _parse_batch_xml(raw_xml, corpus_tag)
+            xml_records = _parse_batch_xml(raw_xml, collection_name)
             records.extend(xml_records)
 
         except Exception as e:

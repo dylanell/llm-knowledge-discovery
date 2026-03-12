@@ -9,6 +9,6 @@ class PaperRecord(BaseModel):
     authors: list[str]  # "LastName Initials" format
     year: int | None  # None if unparseable
     journal: str | None  # None if missing
-    corpus_tag: str  # caller-supplied label, e.g. "arabidopsis"
+    collection_name: str  # MongoDB collection this record belongs to
     fetched_at: datetime  # UTC timestamp
     raw_xml: str  # raw Entrez XML — preserved for future re-parsing
