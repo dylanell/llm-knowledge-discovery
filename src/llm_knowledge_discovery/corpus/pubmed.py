@@ -14,11 +14,10 @@ logger = logging.getLogger(__name__)
 _MOD = "[pubmed.py]"
 
 
-def _configure_entrez() -> int:
+def _configure_entrez() -> None:
     """
-    Read ENTREZ_EMAIL and ENTREZ_API_KEY from env, configure Biopython's Entrez.
-    Returns the rate limit (requests/sec): 10 with API key, 3 without.
-    Raises ValueError if ENTREZ_EMAIL is missing.
+    Read ENTREZ_EMAIL and ENTREZ_API_KEY from env and configure Biopython's
+    Entrez globals. Raises ValueError if ENTREZ_EMAIL is missing.
     """
     email = os.getenv("ENTREZ_EMAIL")
     if not email:
@@ -26,72 +25,31 @@ def _configure_entrez() -> int:
             f"{_MOD} ENTREZ_EMAIL environment variable is required by NCBI"
         )
 
-    api_key = os.getenv("ENTREZ_API_KEY")
-
     Entrez.email = email
+    api_key = os.getenv("ENTREZ_API_KEY")
     if api_key:
         Entrez.api_key = api_key
-        return 10  # 10 requests/sec with API key
-    return 3  # 3 requests/sec without API key
 
 
-def search_pubmed(query: str, max_results: int) -> list[str] | None:
+def _search_pubmed(query: str, max_results: int) -> list[str] | None:
     """
     Search PubMed and return a list of PubMed ID strings.
     Returns None on error (logged) so callers can distinguish failure from a
-    legitimate empty result set.
+    legitimate empty result set. Assumes _configure_entrez() has been called.
     """
-    _configure_entrez()
     try:
         handle = Entrez.esearch(db="pubmed", term=query, retmax=max_results)
+    except Exception as e:
+        logger.error(f"{_MOD} PubMed search failed for query '{query}': {e}")
+        return None
+    try:
         record = Entrez.read(handle)
-        handle.close()
         return list(record["IdList"])
     except Exception as e:
         logger.error(f"{_MOD} PubMed search failed for query '{query}': {e}")
         return None
-
-
-def fetch_records(
-    pubmed_ids: list[str],
-    corpus_tag: str,
-    batch_size: int = 100,
-) -> list[PaperRecord]:
-    """
-    Fetch PubMed records in batches and return parsed PaperRecord objects.
-    Sleeps between batches to respect NCBI rate limits.
-    Skips malformed records (logs warning and continues).
-    """
-    rate = _configure_entrez()
-    sleep_interval = 1.0 / rate
-
-    records: list[PaperRecord] = []
-
-    for i in range(0, len(pubmed_ids), batch_size):
-        batch = pubmed_ids[i : i + batch_size]
-        ids_str = ",".join(batch)
-
-        try:
-            handle = Entrez.efetch(
-                db="pubmed", id=ids_str, rettype="xml", retmode="xml"
-            )
-            raw_xml = handle.read()
-            handle.close()
-
-            # Parse records from the raw XML (single HTTP request per batch)
-            xml_records = _parse_batch_xml(raw_xml, corpus_tag)
-            records.extend(xml_records)
-
-        except Exception as e:
-            logger.error(
-                f"{_MOD} Failed to fetch batch starting at index {i}: {e}"
-            )
-
-        # Sleep between batches to stay within rate limit
-        if i + batch_size < len(pubmed_ids):
-            time.sleep(sleep_interval)
-
-    return records
+    finally:
+        handle.close()
 
 
 def _parse_batch_xml(raw_xml: bytes, corpus_tag: str) -> list[PaperRecord]:
@@ -123,9 +81,8 @@ def _parse_batch_xml(raw_xml: bytes, corpus_tag: str) -> list[PaperRecord]:
         )
         article_xml_strings = [""] * len(articles)
 
-    results: list[PaperRecord] = []
-
     # Order of Entrez.read articles and ET elements is guaranteed to match
+    results = []
     for article, article_xml in zip(articles, article_xml_strings):
         record = _parse_record(article, article_xml, corpus_tag)
         if record is not None:
@@ -138,22 +95,22 @@ def _parse_record(
     article: dict, raw_xml: str, corpus_tag: str
 ) -> PaperRecord | None:
     """
-    Extract fields from a biopython-parsed PubmedArticle dict.
-    Returns None on failure (logs the error).
+    Extract fields from a biopython-parsed PubmedArticle dict and return a
+    formatted PaperRecord object. Returns None on failure (logs the error).
     """
     try:
         citation = article["MedlineCitation"]
         article_data = citation["Article"]
 
-        # --- PubMed ID ---
+        # Parse PubMed ID
         pubmed_id = str(citation["PMID"])
 
-        # --- Title ---
+        # Parse title, removing XML tags
         title = re.sub(
             r"<[^>]+>", "", str(article_data.get("ArticleTitle", ""))
         )
 
-        # --- Abstract ---
+        # Parse abstract, removing XML tags
         # AbstractText can be a list (structured abstract) or a plain string.
         # Strip HTML/XML tags (e.g. <i>, <sub>) — we only want plain text.
         abstract_raw = article_data.get("Abstract", {}).get("AbstractText", "")
@@ -163,20 +120,20 @@ def _parse_record(
             abstract = str(abstract_raw)
         abstract = re.sub(r"<[^>]+>", "", abstract)
 
-        # --- Authors ---
-        authors: list[str] = []
-        author_list = article_data.get("AuthorList", [])
-        for author in author_list:
+        # Parse list of author objects to list of author strings
+        author_objs = article_data.get("AuthorList", [])
+        authors = []
+        for author_obj in author_objs:
             # Some entries are CollectiveName (org), not individual authors
-            if "CollectiveName" in author:
-                authors.append(str(author["CollectiveName"]))
-            elif "LastName" in author:
-                last = author["LastName"]
-                initials = author.get("Initials", "")
+            if "CollectiveName" in author_obj:
+                authors.append(str(author_obj["CollectiveName"]))
+            elif "LastName" in author_obj:
+                last = author_obj["LastName"]
+                initials = author_obj.get("Initials", "")
                 authors.append(f"{last} {initials}".strip())
 
-        # --- Year ---
-        year: int | None = None
+        # Parse year
+        year = None
         pub_date = (
             article_data.get("Journal", {})
             .get("JournalIssue", {})
@@ -194,9 +151,9 @@ def _parse_record(
             except (ValueError, TypeError):
                 pass
 
-        # --- Journal ---
-        journal: str | None = None
+        # Parse journal
         journal_data = article_data.get("Journal", {})
+        journal = None
         if "Title" in journal_data:
             journal = str(journal_data["Title"])
 
@@ -217,34 +174,64 @@ def _parse_record(
         return None
 
 
-def fetch_abstracts(
-    query: str, max_results: int, corpus_tag: str
+def fetch_records(
+    query: str, max_results: int, corpus_tag: str, batch_size: int = 100
 ) -> list[PaperRecord]:
     """
-    Top-level public function. Search PubMed and fetch abstracts.
-    No MongoDB interaction — independently testable.
+    Search PubMed and fetch parsed records. No MongoDB interaction —
+    independently testable.
 
     Args:
         query: Free-text PubMed search query (e.g. "BRCA1 breast cancer")
         max_results: Maximum number of results to fetch
         corpus_tag: Label for this corpus (e.g. "arabidopsis", "brca1")
+        batch_size: Number of records to fetch per Entrez request
 
     Returns:
         List of PaperRecord objects
     """
+    _configure_entrez()
+    rate = 10 if os.getenv("ENTREZ_API_KEY") else 3
+    sleep_interval = 1.0 / rate
+
     logger.info(
         f"{_MOD} Searching PubMed: '{query}' "
         f"(max={max_results}, tag={corpus_tag})"
     )
-    pubmed_ids = search_pubmed(query, max_results)
+    pubmed_ids = _search_pubmed(query, max_results)
 
     if pubmed_ids is None:
-        return []  # error already logged in search_pubmed
+        return []  # error already logged in _search_pubmed
     if not pubmed_ids:
         logger.warning(f"{_MOD} Search returned 0 results for query.")
         return []
 
     logger.info(f"{_MOD} Found {len(pubmed_ids)} IDs, fetching records...")
-    records = fetch_records(pubmed_ids, corpus_tag)
+    records = []
+    for i in range(0, len(pubmed_ids), batch_size):
+        batch = pubmed_ids[i : i + batch_size]
+        ids_str = ",".join(batch)
+
+        try:
+            handle = Entrez.efetch(
+                db="pubmed", id=ids_str, rettype="xml", retmode="xml"
+            )
+            try:
+                raw_xml = handle.read()
+            finally:
+                handle.close()
+
+            xml_records = _parse_batch_xml(raw_xml, corpus_tag)
+            records.extend(xml_records)
+
+        except Exception as e:
+            logger.error(
+                f"{_MOD} Failed to fetch batch starting at index {i}: {e}"
+            )
+
+        # Sleep between batches to stay within rate limit
+        if i + batch_size < len(pubmed_ids):
+            time.sleep(sleep_interval)
+
     logger.info(f"{_MOD} Fetched and parsed {len(records)} records.")
     return records
