@@ -8,6 +8,9 @@ from langchain_huggingface import HuggingFaceEmbeddings
 logger = logging.getLogger(__name__)
 _MOD = "[store.py]"
 
+# Suppress errors from ChromaDB's broken posthog telemetry client
+logging.getLogger("chromadb.telemetry").setLevel(logging.CRITICAL)
+
 # Default embedding model — fast, good quality, standard in LangChain examples
 DEFAULT_EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
@@ -41,12 +44,11 @@ def build_vectorstore(
     # duplicate documents. Chroma.from_documents appends to existing
     # collections rather than replacing them.
     client = chromadb.PersistentClient(path=persist_dir)
-    existing = [c.name for c in client.list_collections()]
+    # In chromadb>=0.6.0, list_collections() returns names directly
+    existing = client.list_collections()
     if collection_name in existing:
         client.delete_collection(collection_name)
-        logger.info(
-            f"{_MOD} Deleted existing collection '{collection_name}'"
-        )
+        logger.info(f"{_MOD} Deleted existing collection '{collection_name}'")
 
     embeddings = HuggingFaceEmbeddings(model_name=embedding_model)
 

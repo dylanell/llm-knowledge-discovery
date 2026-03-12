@@ -8,6 +8,7 @@ Exploring knowledge extraction and discovery with LLMs.
 - [Setup](#setup)
 - [Services](#services)
 - [Datasets](#datasets)
+- [RAG Workflow](#rag-workflow)
 - [Testing](#testing)
 - [Todo](#todo)
 
@@ -18,7 +19,8 @@ llm-knowledge-discovery/
 ├── doc/                        # Technical specs and design docs
 ├── notebooks/                  # Exploratory notebooks (numbered by phase)
 │   ├── 0.corpus.ipynb          # Corpus retrieval walkthrough
-│   └── 1.vectorstore.ipynb     # Vector store setup and embedding walkthrough
+│   ├── 1.vectorstore.ipynb     # Vector store setup and embedding walkthrough
+│   └── 2.rag.ipynb             # RAG chain, critic, and refinement loop walkthrough
 ├── scripts/                    # Runnable entry points
 │   ├── onboard_corpus.py       # Fetch PubMed abstracts → MongoDB
 │   └── build_vectorstore.py    # Chunk abstracts → Chroma vector store
@@ -27,9 +29,13 @@ llm-knowledge-discovery/
 │   │   ├── models.py           # PaperRecord (Pydantic)
 │   │   ├── pubmed.py           # Entrez API fetch
 │   │   └── storage.py          # MongoDB upsert and load
-│   └── vectorstore/            # Chunking and Chroma vector store
-│       ├── chunking.py         # PaperRecord → LangChain Document
-│       └── store.py            # Build and load Chroma stores
+│   ├── vectorstore/            # Chunking, embedding, and Chroma vector store
+│   │   ├── chunking.py         # PaperRecord → LangChain Document
+│   │   ├── reranking.py        # Cross-encoder reranking (ms-marco-MiniLM)
+│   │   └── store.py            # Build and load Chroma stores
+│   └── rag/                    # RAG chain and critic
+│       ├── chain.py            # build_rag_chain, invoke_and_review, RagResult
+│       └── critic.py           # critique_response, CritiqueResult
 ├── .claude/                    # Gitignored: Claude session notes and lessons
 │   ├── lessons.md              # Accumulated corrections — Claude reads this on startup
 │   ├── session_notes_<N>.md    # Per-session summaries of work done and TODOs
@@ -169,6 +175,54 @@ uv run scripts/build_vectorstore.py \
 ```
 
 This embeds all abstracts using `all-MiniLM-L6-v2` and persists the index to `.data/vectorstore/`. Only needs to be run once; subsequent RAG workflows load from disk via `load_vectorstore()`.
+
+## RAG Workflow
+
+The RAG pipeline is implemented in `src/llm_knowledge_discovery/rag/` and demonstrated in `notebooks/2.rag.ipynb`.
+
+### Basic chain
+
+`build_rag_chain` returns an LCEL chain (`str → str`) that handles the full pipeline in one call:
+
+```
+query
+  → similarity search (retrieval_k=10 candidates)
+  → cross-encoder rerank (rerank_k=5 kept)
+  → ChatPromptTemplate (abstracts + question)
+  → Claude
+  → answer string
+```
+
+```python
+from llm_knowledge_discovery.rag import build_rag_chain
+
+chain = build_rag_chain(vectorstore)
+answer = chain.invoke("What genes regulate flowering time in Arabidopsis?")
+```
+
+### Critic + refinement loop
+
+`invoke_and_review` wraps the pipeline with an optional self-correction loop. The initial answer is generated via structured output (`RagResult`) so cited references are available as a typed list without parsing. A critic LLM then audits the answer for three things: citation integrity, sequential numbering, and exact title accuracy. If the critique fails, the issues are fed back in a follow-up turn and the answer is regenerated — up to `review_steps` times.
+
+```python
+from llm_knowledge_discovery.rag import invoke_and_review
+
+answer, critiques = invoke_and_review(
+    query="What genes regulate flowering time in Arabidopsis?",
+    vectorstore=vectorstore,
+    review_steps=2,
+)
+```
+
+### Standalone retrieval
+
+`retrieve_and_rerank` is also available directly — it's the same function the chain calls internally:
+
+```python
+from llm_knowledge_discovery.rag import retrieve_and_rerank
+
+docs = retrieve_and_rerank(query, vectorstore)
+```
 
 ## Testing
 
