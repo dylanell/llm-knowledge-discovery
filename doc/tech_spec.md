@@ -1,7 +1,7 @@
 # LLM Knowledge Discovery: Plant Gene Regulation
-## Technical Specification v1.2
-**Date:** 2026-03-11
-**Status:** Draft — Phase 1 Planning
+## Technical Specification v1.3
+**Date:** 2026-03-12
+**Status:** Active — Corpus Retrieval Complete, Beginning Text RAG (Phase 1)
 
 ---
 
@@ -38,7 +38,7 @@ The corpus retrieval and ontology mapping are parameterized by `SPECIES`. Phase 
 
 | Value | Organism | Gene Name Authority |
 |---|---|---|
-| `arabidopsis` | *Arabidopsis thaliana* | **TAIR** (e.g., `AT1G65480`, alias `FT`) ← **Phase 1** |
+| `arabidopsis` | *Arabidopsis thaliana* | **TAIR** (e.g., `AT1G65480`, alias `FT`) ← **current** |
 | `maize` | *Zea mays* | MaizeGDB |
 | `rice` | *Oryza sativa* | RAP-DB |
 | `tomato` | *Solanum lycopersicum* | SGN |
@@ -60,40 +60,42 @@ The delta in RAGAS scores and Hits@K between the two corpus types is a primary r
 - Epigenetic mechanisms (methylation, histone modification)
 - Multi-species comparative genomics
 - Real-time inference serving
-- Non-PubMed corpus sources — Google Scholar (no API, ToS issues) and arXiv (wrong preprint server for plant biology) are not worth pursuing. **bioRxiv** is the relevant biology preprint server and a reasonable Phase 2 corpus expansion once PubMed baselines are established; preprints are excluded from the MVP to keep ground truth clean.
+- Non-PubMed corpus sources — Google Scholar (no API, ToS issues) and arXiv (wrong preprint server for plant biology) are not worth pursuing. **bioRxiv** is the relevant biology preprint server and a reasonable future corpus expansion once PubMed baselines are established; preprints are excluded from the MVP to keep ground truth clean.
 
 ---
 
 ## 3. System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Literature Corpus                         │
-│  PubMed (biopython/Entrez) → MongoDB (raw abstracts/papers) │
-└───────────────────────┬─────────────────────────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────────────────┐
-│                 Extraction Pipeline                          │
-│  LangChain LCEL: Prompt | Claude | PydanticOutputParser      │
-│  Output: structured triples (entity, relation, entity, ctx) │
-└───────────────────────┬─────────────────────────────────────┘
-                        │
-                        ▼
-┌─────────────────────────────────────────────────────────────┐
-│                  Knowledge Graph (Neo4j)                     │
-│  Nodes: Gene, TF, Pathway, Phenotype, Condition, Experiment  │
-│  Edges: REGULATES, EXPRESSED_IN, BINDS_PROMOTER_OF, etc.    │
-│  Provenance: each edge links back to source paper(s)         │
-└──────────────┬────────────────────────┬─────────────────────┘
-               │                        │
-               ▼                        ▼
-┌──────────────────────┐   ┌──────────────────────────────────┐
-│  Eval Track 1: RAG   │   │  Eval Track 2: Masked Prediction  │
-│  (Knowledge          │   │  (Knowledge Discovery)            │
-│   Extraction)        │   │                                   │
-│  RAG + RAGAS         │   │  Edge masking → link prediction   │
-└──────────────────────┘   └──────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                      Literature Corpus                           │
+│   PubMed (biopython/Entrez) → MongoDB (raw abstracts/papers)    │
+└──────────────────┬──────────────────────────┬───────────────────┘
+                   │                          │
+                   ▼                          ▼
+┌─────────────────────────────┐  ┌────────────────────────────────┐
+│       RAG Pipeline           │  │      Extraction Pipeline        │
+│  Chunking → Vector DB        │  │  LCEL: Prompt | Claude          │
+│  KNN Retrieval + Reranking   │  │  | PydanticOutputParser         │
+└──────────────┬──────────────┘  │  → ExtractionResult (triples)   │
+               │                 └──────────────┬───────────────────┘
+               ▼                                │
+┌─────────────────────────────┐                 ▼
+│   Text RAG Evaluation        │  ┌────────────────────────────────┐
+│   RAGAS: faithfulness,       │  │     Knowledge Graph (Neo4j)     │
+│   answer relevancy,          │  │  Nodes: Gene, TF, Pathway, …    │
+│   context precision,         │  │  Edges: ACTIVATES, REPRESSES, … │
+│   context recall             │  │  Provenance on each edge         │
+└─────────────────────────────┘  └──────────────┬───────────────────┘
+                                                 │
+                          ┌──────────────────────┼─────────────────────┐
+                          │                      │                     │
+                          ▼                      ▼                     ▼
+               ┌─────────────────┐  ┌──────────────────┐  ┌──────────────────────┐
+               │   KG Query      │  │  Extraction Eval  │  │   Discovery Eval      │
+               │   Engine        │  │  (known facts,    │  │   (masked facts,      │
+               │   (NL → Cypher) │  │   RAGAS metrics)  │  │   Hits@K, MRR)        │
+               └─────────────────┘  └──────────────────┘  └──────────────────────┘
 ```
 
 ---
@@ -157,7 +159,7 @@ This allows queries like: *"Which genes, when knocked out, strongly decrease hyp
 
 ## 5. Pipeline Design
 
-All stages use LangChain LCEL. Each stage is independently runnable and testable.
+All LLM stages use LangChain LCEL. Each stage is independently runnable and testable.
 
 ### 5.1 Corpus Retrieval
 
@@ -176,13 +178,34 @@ Query construction targets papers that include:
 
 Initial target: **500–1000 abstracts** per species (sufficient ground truth for evaluation).
 
-### 5.2 Extraction Chain
+**Status: Complete.** Arabidopsis corpus loaded in MongoDB (`papers_arabidopsis`).
+
+### 5.2 RAG Pipeline
+
+```
+abstract_text (from MongoDB)
+    → ChunkingStrategy              # whole-abstract or sentence-level (see §9)
+    → EmbeddingModel                # e.g., text-embedding-3-small or equivalent
+    → VectorDB (Chroma)             # indexed for KNN retrieval
+    ↓
+user_query
+    → KNN retrieval (top-K chunks)
+    → CrossEncoderReranker          # rerank to top-N most relevant
+    → RAGPromptTemplate             # assembled context + question
+    | ClaudeModel                   # claude-sonnet-4-6
+    → answer
+```
+
+The retrieval step uses approximate KNN for candidate recall, then a cross-encoder reranker to refine the ranking before assembling the final context window. This two-stage approach is standard for production RAG and catches cases where the embedding model's coarse similarity ranking misorders semantically close chunks.
+
+### 5.3 Extraction Chain
 
 ```
 abstract_text
     → ExtractionPromptTemplate      # few-shot examples for plant gene regulation
     | ClaudeModel                   # claude-sonnet-4-6 or claude-opus-4-6
     | PydanticOutputParser          # → ExtractionResult(entities[], relationships[])
+    → self-review step              # LLM checks its own output for consistency/hallucination
     → MongoDB: extractions_{species}
 ```
 
@@ -192,7 +215,9 @@ The extraction prompt instructs Claude to:
 3. Note the experimental method used
 4. Flag uncertainty explicitly (do not hallucinate relationships)
 
-### 5.3 Graph Loader
+The self-review step passes the extraction result back to the LLM with a critique prompt, which returns a corrected or confirmed version before persisting to MongoDB.
+
+### 5.4 Graph Loader
 
 ```
 ExtractionResult
@@ -203,22 +228,22 @@ ExtractionResult
 
 Deduplication is critical: `FT`, `FLOWERING LOCUS T`, and `AT1G65480` must resolve to the same node. The TAIR API is used to look up canonical locus IDs and populate the `aliases[]` list at load time. When the TAIR API cannot resolve a name, the raw name is retained with a `tair_unresolved=True` flag for manual review.
 
-### 5.4 Query Interface (later phase)
+### 5.5 KG Query Engine
 
-Natural language → Cypher query via LangChain Neo4j integration. Out of scope for Phase 1.
+Natural language → Cypher query via LangChain Neo4j integration. Implemented in Phase 4.
 
 ---
 
 ## 6. Evaluation Framework
 
-### 6.1 Track 1: Knowledge Extraction (RAG + RAGAS)
+### 6.1 Track 1: Knowledge Extraction (Text RAG + RAGAS)
 
 **Goal:** Measure how faithfully the system can answer questions about gene regulation that are directly answerable from the corpus.
 
 **Setup:**
-1. Build a RAG retriever over the raw abstract corpus (vector embeddings in Chroma or Pinecone)
-2. Construct a two-part QA benchmark (see below)
-3. Run the RAG pipeline and evaluate with **RAGAS**
+1. Build the RAG pipeline over the raw abstract corpus (Phase 1)
+2. Construct a QA benchmark (see below)
+3. Run the RAG pipeline and evaluate with **RAGAS** (Phase 2)
 
 **RAGAS Metrics:**
 | Metric | What it measures |
@@ -228,34 +253,33 @@ Natural language → Cypher query via LangChain Neo4j integration. Out of scope 
 | Context Precision | Is the retrieved context actually useful? |
 | Context Recall | Does the retrieval capture all relevant evidence? |
 
-**Benchmark Construction — Two Parts:**
+**Benchmark Construction:**
 
-*Part A: Gold-standard anchor (external ground truth)*
-Download the curated *Arabidopsis* TF-target dataset from **PlantRegMap** (plantregmap.gao-lab.org), which provides experimentally validated regulatory relationships with evidence codes. For each curated relationship, generate a natural-language question (e.g., "Does FT activate SOC1 in Arabidopsis?") with the expected answer derived from the curated record — not from our extraction. This anchors evaluation to an independent ground truth and catches systematic extraction errors that self-consistency metrics would miss.
+*Phase 2 — Synthetic QA pairs (initial baseline)*
+Use an LLM to generate Q&A pairs directly from the abstract corpus. This provides immediate coverage for RAGAS evaluation before the KG is built. Questions target factual regulatory claims stated in the abstracts (e.g., "What does FT regulate in Arabidopsis?").
 
-*Part B: Corpus-derived pairs (coverage)*
-For each extracted triple `(gene_A, ACTIVATES/REPRESSES/REGULATES, gene_B)` from the KG, generate a QA pair grounded in the source abstract. This tests breadth of coverage beyond the curated set.
+*Phase 2 — PlantRegMap gold-standard anchor (external ground truth)*
+Download the curated *Arabidopsis* TF-target dataset from **PlantRegMap** (plantregmap.gao-lab.org), which provides experimentally validated regulatory relationships with evidence codes. Generate natural-language questions for each curated relationship (e.g., "Does FT activate SOC1 in Arabidopsis?") with expected answers derived from the curated record — not from our extraction. This anchors evaluation to an independent ground truth and catches systematic errors that self-consistency metrics would miss.
 
-RAGAS is run over both parts. Part A scores reflect accuracy against known ground truth; Part B scores reflect internal consistency of extraction.
+*Phase 4 — KG-derived pairs (extended benchmark)*
+For each extracted triple `(gene_A, ACTIVATES/REPRESSES/REGULATES, gene_B)` from the KG, generate a QA pair grounded in the source abstract. Added after Phase 3 (extraction) is complete. Tests breadth of coverage beyond the curated set and feeds directly into the text RAG vs. KG RAG comparison.
 
-**Benchmark construction:** Semi-automated. LLM generates candidate QA pairs; human spot-checks a sample, especially for Part A where answer correctness matters most.
+RAGAS is run over all parts. PlantRegMap scores reflect accuracy against known ground truth; synthetic and KG-derived scores reflect internal consistency of extraction.
 
-### 6.2 Track 2: Knowledge Discovery (Masked Prediction)
+### 6.2 Track 2: Knowledge Discovery (KG RAG + Masked Prediction)
 
-**Goal:** Measure how well the system infers regulatory edges that are not explicitly stated in any retrieved context — i.e., genuine discovery from indirect signal.
+**Goal:** Measure how well the system answers questions and infers regulatory edges using only the knowledge graph — no access to raw text.
 
 **Setup:**
-1. Build the full KG from the entire corpus
-2. Randomly mask a held-out set of edges (e.g., 10–20% of `ACTIVATES`/`REPRESSES` edges) — removed from the KG before the discovery system sees it
-3. Run the discovery system on the incomplete KG; it predicts missing edges
-4. Evaluate predictions against the held-out ground truth
+1. Build the full KG from the entire corpus (Phase 3)
+2. Build evaluation dataset: known high-confidence facts + held-out masked edges (Phase 4)
+3. Run the KG query engine on known facts; evaluate with RAGAS metrics (Phase 4)
+4. Randomly mask a held-out set of edges (10–20% of `ACTIVATES`/`REPRESSES` edges); run discovery system on incomplete KG; evaluate against held-out ground truth (Phase 4)
 
 **Critical constraint: KG-only access**
-The discovery system must operate solely on the knowledge graph — no access to raw abstracts or the vector store. This is essential to ensure the task is genuinely about inferring missing structure from graph topology and metadata, not re-reading the evidence that was used to build the graph. Allowing corpus access would let the system trivially recover masked edges by finding the original supporting text.
+The discovery system must operate solely on the knowledge graph — no access to raw abstracts or the vector store. This is essential to ensure the task is genuinely about inferring missing structure from graph topology and metadata, not re-reading the evidence that was used to build the graph.
 
 **Configurable Reference Mode**
-
-The broader query/reasoning system (outside of the masked prediction eval) is configurable via a `reference_mode` parameter:
 
 | Mode | Reference Source | Use Case |
 |---|---|---|
@@ -263,19 +287,17 @@ The broader query/reasoning system (outside of the masked prediction eval) is co
 | `kg` | Knowledge graph only | Graph-based reasoning; used for discovery eval |
 | `hybrid` | Both corpus + KG | Full system; expected best performance |
 
-The masked prediction benchmark always uses `kg` mode to maintain eval integrity. The `hybrid` mode is the default for the deployed query interface.
+The masked prediction benchmark always uses `kg` mode to maintain eval integrity.
 
 **Masking Strategy:**
 - Mask edges, not nodes (retain node existence)
-- Stratify by `paper_count`: confidence threshold determined empirically from the distribution across all edges. Low-support edges excluded from test set (likely noisy); high-support edges are candidates for masking.
+- Stratify by `paper_count`: high-support edges are candidates for masking; low-support edges excluded from test set (likely noisy)
 - Separate validation and test splits to avoid overfitting discovery heuristics
 
 **Discovery Approaches (progressive):**
 1. **Graph topology heuristics** — common neighbors, Jaccard similarity, Adamic-Adar (interpretable baseline)
 2. **LLM-based reasoning** — prompt Claude with the partial KG neighborhood and node/edge metadata only; no raw text
-3. **Embedding-based methods** — node2vec embeddings + cosine similarity; later graph neural network approaches (e.g., GraphSAGE, TransE for KG-specific embedding)
-
-The progression from topology → LLM → embeddings → GNNs is deliberate: each step adds complexity and we want to understand what each buys us in terms of Hits@K before investing in more sophisticated models.
+3. **Embedding-based methods** — node2vec embeddings + cosine similarity; later graph neural network approaches (e.g., GraphSAGE, TransE)
 
 **Metrics:**
 | Metric | Description |
@@ -285,39 +307,60 @@ The progression from topology → LLM → embeddings → GNNs is deliberate: eac
 | Precision@K | Fraction of top-K predictions that are correct |
 | AUC-ROC | Overall discrimination ability |
 
+**Head-to-head comparison (Phase 4)**
+Text RAG (Phase 1–2) and KG RAG (Phase 4) are evaluated on the same RAGAS metrics over the same question set. This direct comparison is a primary research output of the project.
+
 ---
 
 ## 7. Implementation Phases
 
-### Phase 1: Corpus + Extraction Pipeline
-- [ ] Add LangChain deps (`langchain`, `langchain-anthropic`, `langchain-neo4j`, `ragas`, `chromadb`)
-- [ ] Implement `src/corpus/` — PubMed retriever, parameterized by species
-- [ ] Implement `src/extraction/` — LCEL extraction chain with Pydantic models
-- [ ] Implement `src/graph/` — Neo4j loader with gene name deduplication
-- [ ] Notebook: inspect first batch of extractions for one species
+### Completed: Corpus Retrieval
 
-### Phase 2: RAG Evaluation (Track 1)
-- [ ] Build vector index over abstract corpus
-- [ ] Auto-generate QA benchmark from extracted triples
-- [ ] Implement RAG pipeline
-- [ ] Run RAGAS evaluation; establish baseline scores
+- [x] Set up local services (MongoDB, Neo4j via Docker Compose)
+- [x] Implement `src/corpus/` — PubMed retriever, parameterized by species
+- [x] Populate Arabidopsis corpus: `papers_arabidopsis` (MongoDB)
 
-### Phase 3: Masked Prediction Benchmark (Track 2)
-- [ ] Implement edge masking framework
-- [ ] Implement baseline link prediction (topology heuristics)
-- [ ] Implement LLM-based edge prediction
-- [ ] Evaluate against held-out masked edges; compute Hits@K, MRR
+### Phase 1: Text RAG
 
-### Phase 4: Full Text Upgrade Study
+- [x] 1.0 Decide vector DB and chunking strategy (whole-abstract vs. sentence-level)
+- [x] 1.1 Chunk abstracts and populate vector DB
+- [x] 1.2 KNN retrieval + cross-encoder reranking
+- [ ] 1.3 Wire into RAG prompt (Anthropic API via LangChain)
+
+### Phase 2: RAGAS Evaluation of Text RAG
+
+- [ ] 2.0 Synthetic QA test set generation (LLM-generated Q&A from abstracts)
+- [ ] 2.1 Faithfulness evaluation
+- [ ] 2.2 Answer relevancy evaluation
+- [ ] 2.3 Context precision evaluation
+- [ ] 2.4 Context recall evaluation
+
+### Phase 3: Extraction Pipeline
+
+- [ ] 3.1 Abstract → entity/relationship extraction (LCEL chain, Pydantic models)
+- [ ] 3.2 Self-review feedback loop on extraction output
+- [ ] 3.3 Publish entities/relationships to Neo4j KG (with gene name deduplication via TAIR)
+
+### Phase 4: KG RAG + Evaluation
+
+- [ ] 4.0 Build evaluation dataset (known high-confidence facts + masked facts)
+- [ ] 4.1 KG query engine (natural language → Cypher via LangChain Neo4j integration)
+- [ ] 4.2 Knowledge extraction evaluation (RAGAS metrics on KG-grounded questions)
+- [ ] 4.3 Knowledge discovery evaluation (masked facts, Hits@K, MRR)
+- [ ] 4.4 Head-to-head comparison: text RAG (Phase 1–2) vs. KG RAG (Phase 4)
+
+### Phase 5: Full Text Upgrade Study
+
 - [ ] Add PMC Open Access full-text retrieval
 - [ ] Re-run extraction pipeline on full text corpus
 - [ ] Re-run both evaluation tracks (Track 1 + Track 2)
 - [ ] Report delta in RAGAS scores and Hits@K vs. abstract-only baseline
 - [ ] Cost/benefit analysis: additional compute + API cost vs. metric gains
 
-### Phase 5: Iteration & Improvement
-- [ ] Improve extraction prompts based on Track 1 failures
-- [ ] Improve discovery methods based on Track 2 failures (embeddings, GNNs)
+### Phase 6: Iteration & Improvement
+
+- [ ] Improve extraction prompts based on Phase 4 failures
+- [ ] Add embedding-based link prediction (node2vec, GraphSAGE)
 - [ ] Add second species for cross-species evaluation
 - [ ] MLflow experiment tracking throughout
 
@@ -329,11 +372,12 @@ The progression from topology → LLM → embeddings → GNNs is deliberate: eac
 |---|---|
 | Language | Python 3.11+ |
 | Package management | uv |
-| LLM | Anthropic Claude (claude-sonnet-4-6 for extraction, claude-opus-4-6 for reasoning) |
+| LLM | Anthropic Claude (claude-sonnet-4-6 for extraction/RAG, claude-opus-4-6 for reasoning) |
 | LLM Framework | LangChain LCEL |
 | Graph DB | Neo4j 5.14+ |
 | Document Store | MongoDB 7.0 |
-| Vector Store | Chroma (local) → Pinecone (if scale needed) |
+| Vector Store | Chroma (local dev) → Pinecone (if scale needed) |
+| Reranker | Cross-encoder (HuggingFace `cross-encoder/ms-marco-*`) |
 | RAG Evaluation | RAGAS |
 | Literature Retrieval | biopython (Entrez/PubMed) |
 | Data Validation | Pydantic v2 |
@@ -350,11 +394,14 @@ The progression from topology → LLM → embeddings → GNNs is deliberate: eac
 | Species for Phase 1 | *Arabidopsis thaliana* |
 | Gene name authority | TAIR (canonical locus IDs); aliases retained on node |
 | Corpus MVP | PubMed abstracts only |
-| Full text | Added in Phase 4 as a controlled study; same metrics used for direct comparison |
+| Full text | Added in Phase 5 as a controlled study; same metrics used for direct comparison |
 | Ground truth confidence threshold | Determined empirically from the `paper_count` distribution after KG is built; not hardcoded upfront |
 | Regulatory direction encoding | Typed relationships (`ACTIVATES`, `REPRESSES`, `REGULATES`); no separate `direction` property |
 | Edge provenance | `paper_ids[]` + `paper_count` properties on each edge; no `SUPPORTED_BY` relationship (not possible in Neo4j) |
-| Track 1 benchmark | Two-part: PlantRegMap gold-standard anchor (external ground truth) + corpus-derived pairs (coverage) |
+| Track 1 benchmark | Two-part: synthetic QA pairs (Phase 2 baseline) + PlantRegMap gold-standard anchor (Phase 2) + KG-derived pairs (Phase 4 extended benchmark) |
 | Track 2 discovery access | KG-only; corpus access would allow trivial recovery of masked edges from source text |
 | Reference mode | Configurable: `corpus`, `kg`, or `hybrid`; masked prediction eval always uses `kg` |
 | Discovery methods | Progressive: topology baselines → LLM (KG-only) → node2vec → GNNs; each evaluated independently |
+| Chunking strategy | Whole-abstract as default chunk unit (abstracts are 150–300 words; sub-abstract chunking may be added if retrieval quality is poor) |
+| Vector store | Chroma for local dev; MongoDB Atlas Vector Search considered to avoid a new service but Chroma is simpler for local iteration |
+| Reranker | HuggingFace cross-encoder (`cross-encoder/ms-marco-*`); avoids external API dependency |

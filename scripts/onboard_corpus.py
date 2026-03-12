@@ -3,7 +3,7 @@ Fetch PubMed abstracts and store them in MongoDB for one or more queries.
 
 Usage:
     uv run scripts/onboard_corpus.py \\
-        --corpus-tag arabidopsis \\
+        --collection-name arabidopsis_abstracts \\
         --max-results-per-query 500 \\
         --queries "Arabidopsis thaliana transcription factor" \\
                   "Arabidopsis gene regulation chromatin" \\
@@ -29,9 +29,12 @@ def main() -> None:
         description="Onboard a PubMed corpus into MongoDB."
     )
     parser.add_argument(
-        "--corpus-tag",
+        "--collection-name",
         required=True,
-        help="Label for this corpus (e.g. 'arabidopsis')",
+        help=(
+            "MongoDB collection name to store records in "
+            "(e.g. 'arabidopsis_abstracts')"
+        ),
     )
     parser.add_argument(
         "--max-results-per-query",
@@ -52,7 +55,7 @@ def main() -> None:
     for i, query in enumerate(args.queries, start=1):
         logger.info(f"{_SCRIPT} Query {i}/{len(args.queries)}: '{query}'")
         result = fetch_and_store(
-            query, args.max_results_per_query, args.corpus_tag
+            query, args.max_results_per_query, args.collection_name
         )
         ins = result["inserted"]
         skp = result["skipped"]

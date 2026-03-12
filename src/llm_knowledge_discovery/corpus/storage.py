@@ -11,10 +11,9 @@ logger = logging.getLogger(__name__)
 _MOD = "[storage.py]"
 
 
-def _get_collection(corpus_tag: str) -> Collection:
+def _get_collection(collection_name: str) -> Collection:
     """
-    Connect to MongoDB and return the collection for the given corpus_tag.
-    Collection name: papers_<corpus_tag>  (e.g. papers_arabidopsis).
+    Connect to MongoDB and return the named collection.
     Reads MONGO_URI and MONGO_DB_NAME from environment.
     Called lazily — not at import time.
     """
@@ -25,17 +24,46 @@ def _get_collection(corpus_tag: str) -> Collection:
         raise ValueError(f"{_MOD} MONGO_URI environment variable is required")
 
     client = MongoClient(mongo_uri)
-    return client[db_name][f"papers_{corpus_tag}"]
+    return client[db_name][collection_name]
 
 
-def upsert_papers(records: list[PaperRecord], corpus_tag: str) -> dict:
+def load_papers(collection_name: str, limit: int = None) -> list[PaperRecord]:
+    """
+    Load PaperRecord objects from MongoDB for a given collection_name.
+
+    Args:
+        collection_name: The corpus label (e.g. "arabidopsis")
+        limit: Maximum number of records to return. None returns all.
+
+    Returns:
+        List of PaperRecord objects
+    """
+    collection = _get_collection(collection_name)
+
+    cursor = collection.find({})
+    if limit is not None:
+        cursor = cursor.limit(limit)
+
+    records = []
+    for doc in cursor:
+        # MongoDB stores _id as pubmed_id, so we need to map it back
+        doc["pubmed_id"] = doc.pop("_id")
+        records.append(PaperRecord(**doc))
+
+    logger.info(
+        f"{_MOD} Loaded {len(records)} records for corpus '{collection_name}'"
+    )
+    return records
+
+
+def upsert_papers(records: list[PaperRecord], collection_name: str) -> dict:
     """
     Upsert PaperRecord objects into MongoDB using $setOnInsert semantics.
     Existing records are never overwritten — pure deduplication.
 
     Returns a summary dict: {"inserted": N, "skipped": M, "errors": K}
     """
-    collection = _get_collection(corpus_tag)
+    collection = _get_collection(collection_name)
 
     # Build all upsert operations and send in a single bulk request
     # $setOnInsert is a no-op if the document already exists
