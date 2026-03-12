@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 _MOD = "[storage.py]"
 
 
-def get_collection(corpus_tag: str) -> Collection:
+def _get_collection(corpus_tag: str) -> Collection:
     """
     Connect to MongoDB and return the collection for the given corpus_tag.
     Collection name: papers_<corpus_tag>  (e.g. papers_arabidopsis).
@@ -35,34 +35,34 @@ def upsert_papers(records: list[PaperRecord], corpus_tag: str) -> dict:
 
     Returns a summary dict: {"inserted": N, "skipped": M, "errors": K}
     """
-    collection = get_collection(corpus_tag)
+    collection = _get_collection(corpus_tag)
 
     # Build all upsert operations and send in a single bulk request
-    operations = [
-        UpdateOne(
-            {"_id": record.pubmed_id},
-            # $setOnInsert is a no-op if the document already exists
-            {
-                "$setOnInsert": {
-                    "_id": record.pubmed_id,
-                    **record.model_dump(exclude={"pubmed_id"}),
-                }
-            },
-            upsert=True,
+    # $setOnInsert is a no-op if the document already exists
+    operations = []
+    for record in records:
+        operations.append(
+            UpdateOne(
+                {"_id": record.pubmed_id},
+                {
+                    "$setOnInsert": {
+                        "_id": record.pubmed_id,
+                        **record.model_dump(exclude={"pubmed_id"}),
+                    }
+                },
+                upsert=True,
+            )
         )
-        for record in records
-    ]
-
-    inserted = 0
-    skipped = 0
-    errors = 0
 
     try:
         result = collection.bulk_write(operations, ordered=False)
         inserted = result.upserted_count
         skipped = len(records) - inserted
+        errors = 0
     except Exception as e:
         logger.error(f"{_MOD} Bulk write failed: {e}")
+        inserted = 0
+        skipped = 0
         errors = len(records)
 
     logger.info(
