@@ -325,7 +325,7 @@ Text RAG (Phase 1–2) and KG RAG (Phase 4) are evaluated on the same RAGAS metr
 - [x] 1.0 Decide vector DB and chunking strategy (whole-abstract vs. sentence-level)
 - [x] 1.1 Chunk abstracts and populate vector DB
 - [x] 1.2 KNN retrieval + cross-encoder reranking
-- [ ] 1.3 Wire into RAG prompt (Anthropic API via LangChain)
+- [x] 1.3 Wire into RAG prompt (Anthropic API via LangChain)
 
 ### Phase 2: RAGAS Evaluation of Text RAG
 

@@ -4,12 +4,10 @@ from langchain_anthropic import ChatAnthropic
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda, RunnablePassthrough
-from pydantic import BaseModel, Field
-
 from llm_knowledge_discovery.rag.critic import CritiqueResult, critique_response
+from llm_knowledge_discovery.rag.models import RagResult
 from llm_knowledge_discovery.vectorstore.reranking import rerank_documents
 
 logger = logging.getLogger(__name__)
@@ -42,25 +40,6 @@ RAG_PROMPT_TEMPLATE = ChatPromptTemplate.from_messages(
         ),
     ]
 )
-
-
-class RagResult(BaseModel):
-    """Structured output from the initial RAG generation step."""
-
-    answer: str = Field(
-        description=(
-            "The answer body with inline citations. When citing multiple "
-            "sources together, use comma-separated format: [1, 2] not [1][2]."
-            " Do not include a References section in this field."
-        )
-    )
-    references: list[str] = Field(
-        description=(
-            "Exact titles of the cited sources in citation order — "
-            "index 0 corresponds to [1], index 1 to [2], etc. "
-            "Use the exact title as it appears in the context."
-        )
-    )
 
 
 def _format_answer(body: str, references: list[str]) -> str:
@@ -127,7 +106,7 @@ def build_rag_chain(
         rerank_k: Number of top docs (after reranking) to include in the prompt
 
     Returns:
-        A Runnable[str, str] — takes a query string, returns an answer string
+        A Runnable[str, RagResult] — takes a query string, returns a RagResult
     """
     llm = ChatAnthropic(model=model)
 
@@ -146,8 +125,7 @@ def build_rag_chain(
             "question": RunnablePassthrough(),
         }
         | RAG_PROMPT_TEMPLATE
-        | llm
-        | StrOutputParser()
+        | llm.with_structured_output(RagResult)
     )
 
     logger.info(
@@ -164,7 +142,7 @@ def invoke_and_review(
     retrieval_k: int = DEFAULT_RETRIEVAL_K,
     rerank_k: int = DEFAULT_RERANK_K,
     review_steps: int = 1,
-) -> tuple[str, list[CritiqueResult]]:
+) -> tuple[RagResult, list[CritiqueResult]]:
     """
     Run the full RAG pipeline with an optional self-correction loop.
 
@@ -183,7 +161,8 @@ def invoke_and_review(
             (1 = generate once, critique once)
 
     Returns:
-        Tuple of (final_answer, list of CritiqueResult from each step)
+        Tuple of (RagResult, list of CritiqueResult from each step).
+        Use _format_answer(result.answer, result.references) for display.
     """
     llm = ChatAnthropic(model=model)
 
@@ -213,7 +192,7 @@ def invoke_and_review(
 
     # pre_filled_chain is used for refinement turns — it receives
     # already-formatted messages rather than a raw query string.
-    pre_filled_chain = llm | StrOutputParser()
+    pre_filled_chain = llm.with_structured_output(RagResult)
 
     critiques = []
 
@@ -230,8 +209,7 @@ def invoke_and_review(
         # Build refinement issues as a bulleted list for clarity
         issue_lines = "\n".join(f"- {issue}" for issue in critique.issues)
         ref_lines = "\n".join(
-            f"[{i + 1}] {title}"
-            for i, title in enumerate(original_references)
+            f"[{i + 1}] {title}" for i, title in enumerate(original_references)
         )
         refinement_prompt = (
             f"Your answer has the following citation/title issues:"
@@ -248,7 +226,12 @@ def invoke_and_review(
             HumanMessage(content=refinement_prompt),
         ]
 
-        answer = pre_filled_chain.invoke(refinement_messages)
+        rag_result = pre_filled_chain.invoke(refinement_messages)
+        # Always reconstruct display answer using original_references —
+        # refinement may not preserve them exactly in the structured output
+        answer = _format_answer(rag_result.answer, original_references)
         logger.info(f"{_MOD} Refined answer generated (step {step + 1})")
 
-    return answer, critiques
+    # Return a RagResult with original_references locked in
+    final = RagResult(answer=rag_result.answer, references=original_references)
+    return final, critiques
