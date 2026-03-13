@@ -8,6 +8,7 @@ Exploring knowledge extraction and discovery with LLMs.
 - [Setup](#setup)
 - [Services](#services)
 - [Datasets](#datasets)
+- [Vector Store](#vector-store)
 - [RAG Workflow](#rag-workflow)
 - [Testing](#testing)
 - [Todo](#todo)
@@ -20,7 +21,8 @@ llm-knowledge-discovery/
 ├── notebooks/                  # Exploratory notebooks (numbered by phase)
 │   ├── 0.corpus.ipynb          # Corpus retrieval walkthrough
 │   ├── 1.vectorstore.ipynb     # Vector store setup and embedding walkthrough
-│   └── 2.rag.ipynb             # RAG chain, critic, and refinement loop walkthrough
+│   ├── 2.rag.ipynb             # RAG chain, critic, and refinement loop walkthrough
+│   └── 3.rag_faithfulness.ipynb # RAGAS faithfulness evaluation walkthrough
 ├── scripts/                    # Runnable entry points
 │   ├── onboard_corpus.py       # Fetch PubMed abstracts → MongoDB
 │   └── build_vectorstore.py    # Chunk abstracts → Chroma vector store
@@ -33,9 +35,13 @@ llm-knowledge-discovery/
 │   │   ├── chunking.py         # PaperRecord → LangChain Document
 │   │   ├── reranking.py        # Cross-encoder reranking (ms-marco-MiniLM)
 │   │   └── store.py            # Build and load Chroma stores
-│   └── rag/                    # RAG chain and critic
-│       ├── chain.py            # build_rag_chain, invoke_and_review, RagResult
-│       └── critic.py           # critique_response, CritiqueResult
+│   ├── rag/                    # RAG chain and critic
+│   │   ├── models.py           # RagResult (Pydantic)
+│   │   ├── chain.py            # build_rag_chain, invoke_and_review
+│   │   └── critic.py           # critique_response, CritiqueResult
+│   └── eval/                   # RAGAS evaluation metrics
+│       ├── models.py           # Claims, ClaimVerification, FaithfulnessResult
+│       └── faithfulness.py     # score_faithfulness (two-step claim extraction + verification)
 ├── .claude/                    # Gitignored: Claude session notes and lessons
 │   ├── lessons.md              # Accumulated corrections — Claude reads this on startup
 │   ├── session_notes_<N>.md    # Per-session summaries of work done and TODOs
@@ -163,7 +169,7 @@ uv run scripts/onboard_corpus.py \
         "Arabidopsis thaliana stress response signaling pathway"
 ```
 
-### Vector Store
+## Vector Store
 
 Once the corpus is in MongoDB, build the Chroma vector store for semantic search:
 
@@ -176,28 +182,39 @@ uv run scripts/build_vectorstore.py \
 
 This embeds all abstracts using `all-MiniLM-L6-v2` and persists the index to `.data/vectorstore/`. Only needs to be run once; subsequent RAG workflows load from disk via `load_vectorstore()`.
 
+```python
+from llm_knowledge_discovery.vectorstore import load_vectorstore
+
+vectorstore = load_vectorstore(
+    persist_dir=".data/vectorstore",
+    collection_name="arabidopsis_abstracts",
+)
+```
+
 ## RAG Workflow
 
 The RAG pipeline is implemented in `src/llm_knowledge_discovery/rag/` and demonstrated in `notebooks/2.rag.ipynb`.
 
 ### Basic chain
 
-`build_rag_chain` returns an LCEL chain (`str → str`) that handles the full pipeline in one call:
+`build_rag_chain` returns an LCEL chain (`str → RagResult`) that handles the full pipeline in one call:
 
 ```
 query
   → similarity search (retrieval_k=10 candidates)
   → cross-encoder rerank (rerank_k=5 kept)
   → ChatPromptTemplate (abstracts + question)
-  → Claude
-  → answer string
+  → Claude (structured output)
+  → RagResult(answer, references)
 ```
 
 ```python
 from llm_knowledge_discovery.rag import build_rag_chain
 
 chain = build_rag_chain(vectorstore)
-answer = chain.invoke("What genes regulate flowering time in Arabidopsis?")
+rag_result = chain.invoke("What genes regulate flowering time in Arabidopsis?")
+print(rag_result.answer)
+print(rag_result.references)
 ```
 
 ### Critic + refinement loop
@@ -207,11 +224,13 @@ answer = chain.invoke("What genes regulate flowering time in Arabidopsis?")
 ```python
 from llm_knowledge_discovery.rag import invoke_and_review
 
-answer, critiques = invoke_and_review(
+rag_result, critiques = invoke_and_review(
     query="What genes regulate flowering time in Arabidopsis?",
     vectorstore=vectorstore,
     review_steps=2,
 )
+print(rag_result.answer)
+print(rag_result.references)
 ```
 
 ### Standalone retrieval

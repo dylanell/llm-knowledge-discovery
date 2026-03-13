@@ -230,7 +230,7 @@ Deduplication is critical: `FT`, `FLOWERING LOCUS T`, and `AT1G65480` must resol
 
 ### 5.5 KG Query Engine
 
-Natural language → Cypher query via LangChain Neo4j integration. Implemented in Phase 4.
+Natural language → Cypher query via LangChain Neo4j integration. Implemented in Phase 5.
 
 ---
 
@@ -261,7 +261,7 @@ Use an LLM to generate Q&A pairs directly from the abstract corpus. This provide
 *Phase 2 — PlantRegMap gold-standard anchor (external ground truth)*
 Download the curated *Arabidopsis* TF-target dataset from **PlantRegMap** (plantregmap.gao-lab.org), which provides experimentally validated regulatory relationships with evidence codes. Generate natural-language questions for each curated relationship (e.g., "Does FT activate SOC1 in Arabidopsis?") with expected answers derived from the curated record — not from our extraction. This anchors evaluation to an independent ground truth and catches systematic errors that self-consistency metrics would miss.
 
-*Phase 4 — KG-derived pairs (extended benchmark)*
+*Phase 5 — KG-derived pairs (extended benchmark)*
 For each extracted triple `(gene_A, ACTIVATES/REPRESSES/REGULATES, gene_B)` from the KG, generate a QA pair grounded in the source abstract. Added after Phase 3 (extraction) is complete. Tests breadth of coverage beyond the curated set and feeds directly into the text RAG vs. KG RAG comparison.
 
 RAGAS is run over all parts. PlantRegMap scores reflect accuracy against known ground truth; synthetic and KG-derived scores reflect internal consistency of extraction.
@@ -271,10 +271,10 @@ RAGAS is run over all parts. PlantRegMap scores reflect accuracy against known g
 **Goal:** Measure how well the system answers questions and infers regulatory edges using only the knowledge graph — no access to raw text.
 
 **Setup:**
-1. Build the full KG from the entire corpus (Phase 3)
-2. Build evaluation dataset: known high-confidence facts + held-out masked edges (Phase 4)
-3. Run the KG query engine on known facts; evaluate with RAGAS metrics (Phase 4)
-4. Randomly mask a held-out set of edges (10–20% of `ACTIVATES`/`REPRESSES` edges); run discovery system on incomplete KG; evaluate against held-out ground truth (Phase 4)
+1. Build the full KG from the entire corpus (Phase 4)
+2. Build evaluation dataset: known high-confidence facts + held-out masked edges (Phase 5)
+3. Run the KG query engine on known facts; evaluate with RAGAS metrics (Phase 5)
+4. Randomly mask a held-out set of edges (10–20% of `ACTIVATES`/`REPRESSES` edges); run discovery system on incomplete KG; evaluate against held-out ground truth (Phase 5)
 
 **Critical constraint: KG-only access**
 The discovery system must operate solely on the knowledge graph — no access to raw abstracts or the vector store. This is essential to ensure the task is genuinely about inferring missing structure from graph topology and metadata, not re-reading the evidence that was used to build the graph.
@@ -307,8 +307,8 @@ The masked prediction benchmark always uses `kg` mode to maintain eval integrity
 | Precision@K | Fraction of top-K predictions that are correct |
 | AUC-ROC | Overall discrimination ability |
 
-**Head-to-head comparison (Phase 4)**
-Text RAG (Phase 1–2) and KG RAG (Phase 4) are evaluated on the same RAGAS metrics over the same question set. This direct comparison is a primary research output of the project.
+**Head-to-head comparison (Phase 5)**
+Text RAG (Phase 1–2) and KG RAG (Phase 5) are evaluated on the same RAGAS metrics over the same question set. This direct comparison is a primary research output of the project.
 
 ---
 
@@ -325,31 +325,62 @@ Text RAG (Phase 1–2) and KG RAG (Phase 4) are evaluated on the same RAGAS metr
 - [x] 1.0 Decide vector DB and chunking strategy (whole-abstract vs. sentence-level)
 - [x] 1.1 Chunk abstracts and populate vector DB
 - [x] 1.2 KNN retrieval + cross-encoder reranking
-- [ ] 1.3 Wire into RAG prompt (Anthropic API via LangChain)
+- [x] 1.3 Wire into RAG prompt (Anthropic API via LangChain)
 
 ### Phase 2: RAGAS Evaluation of Text RAG
 
 - [ ] 2.0 Synthetic QA test set generation (LLM-generated Q&A from abstracts)
-- [ ] 2.1 Faithfulness evaluation
+- [x] 2.1 Faithfulness evaluation
 - [ ] 2.2 Answer relevancy evaluation
 - [ ] 2.3 Context precision evaluation
 - [ ] 2.4 Context recall evaluation
 
-### Phase 3: Extraction Pipeline
+### Phase 3: RAG Delivery (after Phase 2)
 
-- [ ] 3.1 Abstract → entity/relationship extraction (LCEL chain, Pydantic models)
-- [ ] 3.2 Self-review feedback loop on extraction output
-- [ ] 3.3 Publish entities/relationships to Neo4j KG (with gene name deduplication via TAIR)
+Gate delivery of a RAG version behind an automated eval bench, then expose the
+passing version as a REST API.
 
-### Phase 4: KG RAG + Evaluation
+**Eval bench**
+- [ ] 3.1 Implement an eval runner script that runs the full Phase 2 RAGAS workflow
+      (faithfulness, answer relevancy, context precision, context recall) over a
+      fixed question set and writes scores to a results artifact
+- [ ] 3.2 Define per-metric delivery thresholds (e.g. faithfulness ≥ 0.85,
+      answer relevancy ≥ 0.80) in a config file; the runner fails with a non-zero
+      exit code if any threshold is not met
+- [ ] 3.3 Wire the eval runner into a GitHub Actions workflow that triggers on PRs
+      to `main`; a failing eval blocks merge
 
-- [ ] 4.0 Build evaluation dataset (known high-confidence facts + masked facts)
-- [ ] 4.1 KG query engine (natural language → Cypher via LangChain Neo4j integration)
-- [ ] 4.2 Knowledge extraction evaluation (RAGAS metrics on KG-grounded questions)
-- [ ] 4.3 Knowledge discovery evaluation (masked facts, Hits@K, MRR)
-- [ ] 4.4 Head-to-head comparison: text RAG (Phase 1–2) vs. KG RAG (Phase 4)
+**API**
+- [ ] 3.4 FastAPI app with a `/query` endpoint accepting a question, returning `RagResult`
+- [ ] 3.5 `/query/review` endpoint using `invoke_and_review` with configurable `review_steps`
+- [ ] 3.6 Containerize alongside existing services in `docker-compose.yml`
 
-### Phase 5: Full Text Upgrade Study
+**Versioned delivery**
+- [ ] 3.7 Tag a RAG version (model, retrieval_k, rerank_k, prompt hash) in a config
+      file; the API reads this config at startup so a specific eval-passing version
+      is always what gets served
+
+> **Future:** extend the GitHub Actions workflow to compare new eval scores against
+> the currently deployed version's scores. If all metrics improve (or meet a
+> configurable "better-than-baseline" threshold), automatically upsert the deployment
+> config to point to the new version — making promotion fully automatic for
+> improvements and still blocking regressions.
+
+### Phase 4: Extraction Pipeline (can run in parallel with Phase 3)
+
+- [ ] 4.1 Abstract → entity/relationship extraction (LCEL chain, Pydantic models)
+- [ ] 4.2 Self-review feedback loop on extraction output
+- [ ] 4.3 Publish entities/relationships to Neo4j KG (with gene name deduplication via TAIR)
+
+### Phase 5: KG RAG + Evaluation
+
+- [ ] 5.0 Build evaluation dataset (known high-confidence facts + masked facts)
+- [ ] 5.1 KG query engine (natural language → Cypher via LangChain Neo4j integration)
+- [ ] 5.2 Knowledge extraction evaluation (RAGAS metrics on KG-grounded questions)
+- [ ] 5.3 Knowledge discovery evaluation (masked facts, Hits@K, MRR)
+- [ ] 5.4 Head-to-head comparison: text RAG (Phase 1–2) vs. KG RAG (Phase 5)
+
+### Phase 6: Full Text Upgrade Study
 
 - [ ] Add PMC Open Access full-text retrieval
 - [ ] Re-run extraction pipeline on full text corpus
@@ -357,9 +388,9 @@ Text RAG (Phase 1–2) and KG RAG (Phase 4) are evaluated on the same RAGAS metr
 - [ ] Report delta in RAGAS scores and Hits@K vs. abstract-only baseline
 - [ ] Cost/benefit analysis: additional compute + API cost vs. metric gains
 
-### Phase 6: Iteration & Improvement
+### Phase 7: Iteration & Improvement
 
-- [ ] Improve extraction prompts based on Phase 4 failures
+- [ ] Improve extraction prompts based on Phase 5 failures
 - [ ] Add embedding-based link prediction (node2vec, GraphSAGE)
 - [ ] Add second species for cross-species evaluation
 - [ ] MLflow experiment tracking throughout
@@ -398,7 +429,7 @@ Text RAG (Phase 1–2) and KG RAG (Phase 4) are evaluated on the same RAGAS metr
 | Ground truth confidence threshold | Determined empirically from the `paper_count` distribution after KG is built; not hardcoded upfront |
 | Regulatory direction encoding | Typed relationships (`ACTIVATES`, `REPRESSES`, `REGULATES`); no separate `direction` property |
 | Edge provenance | `paper_ids[]` + `paper_count` properties on each edge; no `SUPPORTED_BY` relationship (not possible in Neo4j) |
-| Track 1 benchmark | Two-part: synthetic QA pairs (Phase 2 baseline) + PlantRegMap gold-standard anchor (Phase 2) + KG-derived pairs (Phase 4 extended benchmark) |
+| Track 1 benchmark | Two-part: synthetic QA pairs (Phase 2 baseline) + PlantRegMap gold-standard anchor (Phase 2) + KG-derived pairs (Phase 5 extended benchmark) |
 | Track 2 discovery access | KG-only; corpus access would allow trivial recovery of masked edges from source text |
 | Reference mode | Configurable: `corpus`, `kg`, or `hybrid`; masked prediction eval always uses `kg` |
 | Discovery methods | Progressive: topology baselines → LLM (KG-only) → node2vec → GNNs; each evaluated independently |

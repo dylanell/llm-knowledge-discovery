@@ -31,6 +31,7 @@ def chunk_records(
             f"Valid options: {CHUNK_STRATEGIES}"
         )
 
+    docs = []
     if strategy == "whole_abstract":
         docs = _chunk_whole_abstract(records)
 
