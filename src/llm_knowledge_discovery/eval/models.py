@@ -29,3 +29,36 @@ class FaithfulnessResult(BaseModel):
     total_claims: int
     supported_claims: int
     verifications: list[ClaimVerification]
+
+
+class RelevantQueries(BaseModel):
+    """List of queries that are relevant to a provided answer"""
+
+    queries: list[str]
+
+
+class AnswerRelevancyResult(BaseModel):
+    """Answer relevancy score for a single query."""
+
+    query: str
+    answer: str
+    relevant_queries: RelevantQueries
+    score: float  # cosine sim b/w user query and relevant queries
+
+
+class DocumentRelevance(BaseModel):
+    """Relevance verdict for a single retrieved context document."""
+
+    relevant: bool
+    reason: str  # brief justification — useful for debugging
+
+
+class ContextPrecisionResult(BaseModel):
+    """Context precision score for a single query."""
+
+    query: str
+    answer: str
+    score: float  # weighted precision (MAP-style); 0.0 if no relevant docs
+    num_docs: int
+    num_relevant: int
+    verdicts: list[DocumentRelevance]

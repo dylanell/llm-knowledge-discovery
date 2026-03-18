@@ -13,7 +13,7 @@ from llm_knowledge_discovery.eval.models import (
 logger = logging.getLogger(__name__)
 _MOD = "[faithfulness.py]"
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_RAG_MODEL = "claude-sonnet-4-6"
 
 # Step 1: decompose the answer into atomic factual claims.
 # Context is deliberately excluded — extraction is independent of the source.
@@ -45,12 +45,12 @@ _CLAIM_VERIFICATION_PROMPT = ChatPromptTemplate.from_messages(
             "system",
             "You are a fact verifier. Given a context (a set of scientific "
             "abstracts) and a single factual claim, determine whether the "
-            "claim is directly supported by the context. "
-            "A claim is supported if the context explicitly states it or if "
-            "it is a trivial direct inference (e.g. a restatement in "
-            "different words). A claim is NOT supported if it requires "
-            "multi-hop reasoning beyond what the context says, or if it "
-            "introduces information not present in the context.",
+            "claim is directly supported by the context. A claim is supported "
+            "if the context explicitly states it or if it is a trivial direct "
+            "inference (e.g. a restatement in different words). A claim is NOT "
+            "supported if it requires multi-hop reasoning beyond what the "
+            "context says, or if it introduces information not present in the "
+            "context.",
         ),
         (
             "human",
@@ -87,7 +87,9 @@ def score_faithfulness(
     query: str,
     answer: str,
     context_docs: list[Document],
-    model: str = DEFAULT_MODEL,
+    rag_model: str = DEFAULT_RAG_MODEL,
+    temperature: float = 0,
+    max_tokens: int = 2048,
 ) -> FaithfulnessResult:
     """
     Score the faithfulness of a RAG-generated answer against its source context.
@@ -108,12 +110,17 @@ def score_faithfulness(
             not faithfulness scoring.
         context_docs: The retrieved context documents used to generate the
             answer
-        model: Anthropic model ID to use for extraction and verification
+        rag_model: Anthropic model ID to use for extraction and verification
+        temperature: LLM sampling temperature; default 0 for maximum
+            determinism across benchmark runs
+        max_tokens: Maximum tokens for LLM responses
 
     Returns:
         FaithfulnessResult with per-claim detail and an overall score
     """
-    llm = ChatAnthropic(model=model, max_tokens=1024)
+    llm = ChatAnthropic(
+        model=rag_model, max_tokens=max_tokens, temperature=temperature
+    )
     context = _format_context(context_docs)
 
     # Step 1: extract atomic claims from the answer

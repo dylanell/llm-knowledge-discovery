@@ -37,7 +37,7 @@ line-length = 80
 select = ["E", "F", "W"]  # pycodestyle errors/warnings + pyflakes (PEP8 core)
 
 [tool.ruff.lint.per-file-ignores]
-"*.ipynb" = ["E402"]  # imports after load_dotenv() is intentional in notebooks
+"*.ipynb" = ["E402", "E501"]  # E402: imports after load_dotenv(); E501: string literals in notebook cells are impractical to wrap
 
 [dependency-groups]
 dev = [
