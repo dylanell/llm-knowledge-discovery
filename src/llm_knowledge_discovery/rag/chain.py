@@ -94,6 +94,8 @@ def build_rag_chain(
     model: str = DEFAULT_MODEL,
     retrieval_k: int = DEFAULT_RETRIEVAL_K,
     rerank_k: int = DEFAULT_RERANK_K,
+    temperature: float = 1,
+    max_tokens: int = 4096,
 ):
     """
     Build an LCEL RAG chain that retrieves + reranks abstracts from the
@@ -104,11 +106,13 @@ def build_rag_chain(
         model: Anthropic model ID to use for generation
         retrieval_k: Number of candidate docs to pull via similarity search
         rerank_k: Number of top docs (after reranking) to include in the prompt
+        temperature: LLM sampling temperature
+        max_tokens: Maximum tokens for LLM responses
 
     Returns:
         A Runnable[str, RagResult] — takes a query string, returns a RagResult
     """
-    llm = ChatAnthropic(model=model)
+    llm = ChatAnthropic(model=model, temperature=temperature, max_tokens=max_tokens)
 
     chain = (
         {
@@ -142,6 +146,8 @@ def invoke_and_review(
     retrieval_k: int = DEFAULT_RETRIEVAL_K,
     rerank_k: int = DEFAULT_RERANK_K,
     review_steps: int = 1,
+    temperature: float = 1,
+    max_tokens: int = 4096,
 ) -> tuple[RagResult, list[CritiqueResult]]:
     """
     Run the full RAG pipeline with an optional self-correction loop.
@@ -159,12 +165,14 @@ def invoke_and_review(
         rerank_k: Number of top docs (after reranking) to include in the prompt
         review_steps: Max number of critique + regenerate cycles
             (1 = generate once, critique once)
+        temperature: LLM sampling temperature
+        max_tokens: Maximum tokens for LLM responses
 
     Returns:
         Tuple of (RagResult, list of CritiqueResult from each step).
         Use _format_answer(result.answer, result.references) for display.
     """
-    llm = ChatAnthropic(model=model)
+    llm = ChatAnthropic(model=model, temperature=temperature, max_tokens=max_tokens)
 
     # Retrieve and rerank once — same docs for generation and critic checks
     docs = retrieve_and_rerank(query, vectorstore, retrieval_k, rerank_k)
