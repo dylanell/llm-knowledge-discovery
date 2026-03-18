@@ -10,6 +10,7 @@ Exploring knowledge extraction and discovery with LLMs.
 - [Datasets](#datasets)
 - [Vector Store](#vector-store)
 - [RAG Workflow](#rag-workflow)
+- [RAGAS Evaluation](#ragas-evaluation)
 - [Testing](#testing)
 - [Todo](#todo)
 
@@ -22,7 +23,7 @@ llm-knowledge-discovery/
 │   ├── 0.corpus.ipynb          # Corpus retrieval walkthrough
 │   ├── 1.vectorstore.ipynb     # Vector store setup and embedding walkthrough
 │   ├── 2.rag.ipynb             # RAG chain, critic, and refinement loop walkthrough
-│   └── 3.rag_faithfulness.ipynb # RAGAS faithfulness evaluation walkthrough
+│   └── 3.ragas_metrics.ipynb   # RAGAS evaluation metrics walkthrough
 ├── scripts/                    # Runnable entry points
 │   ├── onboard_corpus.py       # Fetch PubMed abstracts → MongoDB
 │   └── build_vectorstore.py    # Chunk abstracts → Chroma vector store
@@ -40,8 +41,11 @@ llm-knowledge-discovery/
 │   │   ├── chain.py            # build_rag_chain, invoke_and_review
 │   │   └── critic.py           # critique_response, CritiqueResult
 │   └── eval/                   # RAGAS evaluation metrics
-│       ├── models.py           # Claims, ClaimVerification, FaithfulnessResult
-│       └── faithfulness.py     # score_faithfulness (two-step claim extraction + verification)
+│       ├── models.py           # Pydantic result models for all eval metrics
+│       ├── faithfulness.py     # score_faithfulness (claim extraction + verification)
+│       ├── answer_relevancy.py # score_answer_relevancy (synthetic query cosine similarity)
+│       └── context_precision.py # score_context_precision (MAP-style weighted precision)
+├── .github/workflows/          # GitHub Actions CI (ruff lint on PRs)
 ├── .claude/                    # Gitignored: Claude session notes and lessons
 │   ├── lessons.md              # Accumulated corrections — Claude reads this on startup
 │   ├── session_notes_<N>.md    # Per-session summaries of work done and TODOs
@@ -243,10 +247,49 @@ from llm_knowledge_discovery.rag import retrieve_and_rerank
 docs = retrieve_and_rerank(query, vectorstore)
 ```
 
+## RAGAS Evaluation
+
+The `eval/` subpackage implements three RAGAS metrics for evaluating RAG quality, demonstrated in `notebooks/3.ragas_metrics.ipynb`.
+
+| Metric | Function | What it measures |
+|---|---|---|
+| Faithfulness | `score_faithfulness` | Are the answer's claims supported by the retrieved context? Detects hallucination. |
+| Answer Relevancy | `score_answer_relevancy` | Does the answer actually address the question asked? |
+| Context Precision | `score_context_precision` | Were the retrieved documents relevant? Rewards ranking relevant docs higher (MAP-style). |
+
+```python
+from llm_knowledge_discovery.rag import retrieve_and_rerank
+from llm_knowledge_discovery.eval import (
+    score_faithfulness,
+    score_answer_relevancy,
+    score_context_precision,
+)
+
+context_docs = retrieve_and_rerank(query, vectorstore)
+rag_result = chain.invoke(query)
+
+faithfulness = score_faithfulness(
+    query=query, answer=rag_result.answer, context_docs=context_docs
+)
+relevancy = score_answer_relevancy(
+    query=query, answer=rag_result.answer
+)
+precision = score_context_precision(
+    query=query, answer=rag_result.answer, context_docs=context_docs
+)
+
+print(faithfulness.score, relevancy.score, precision.score)
+```
+
+All three scorers default to `temperature=0` for maximum determinism across benchmark runs.
+
 ## Testing
 
 TODO
 
 ## Todo
 
+- [ ] Phase 2.4 — Context recall evaluation (requires synthetic QA dataset)
+- [ ] Phase 2.0 — Synthetic QA test set generation
+- [ ] Phase 3 — RAG Delivery: eval bench runner, GitHub Actions gate, FastAPI endpoints, containerization
 - [ ] Add test suite for corpus retrieval module (`src/llm_knowledge_discovery/corpus/`)
