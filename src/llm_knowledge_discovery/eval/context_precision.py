@@ -14,8 +14,8 @@ _MOD = "[context_precision.py]"
 
 DEFAULT_RAG_MODEL = "claude-sonnet-4-6"
 
-# Determine whether a single retrieved document was useful for answering the query.
-# One LLM call per document keeps parsing simple and failures isolated.
+# Determine whether a single retrieved document was useful for answering the
+# query. One LLM call per document keeps parsing simple and failures isolated.
 _DOCUMENT_RELEVANCE_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
@@ -23,8 +23,9 @@ _DOCUMENT_RELEVANCE_PROMPT = ChatPromptTemplate.from_messages(
             "You are an evaluator for a retrieval-augmented generation system. "
             "Given a user query, a generated answer, and a single retrieved "
             "context document, determine whether the document is relevant — "
-            "i.e., whether it contains information that is useful for answering "
-            "the query. A document is relevant if it directly supports or "
+            "i.e., whether it contains information that is useful for "
+            "answering the query. A document is relevant if it directly "
+            "supports or "
             "provides evidence for the answer, or contains information clearly "
             "pertinent to the query. A document is NOT relevant if it is only "
             "tangentially related or contains no information useful for "
@@ -32,7 +33,8 @@ _DOCUMENT_RELEVANCE_PROMPT = ChatPromptTemplate.from_messages(
         ),
         (
             "human",
-            "Query: {query}\n\nAnswer:\n{answer}\n\n---\n\nContext Document:\n{document}",
+            "Query: {query}\n\nAnswer:\n{answer}\n\n---\n\n"
+            "Context Document:\n{document}",
         ),
     ]
 )
@@ -46,7 +48,9 @@ def _check_document_relevance(
     )
     title = doc.metadata.get("title", "Unknown")
     document_text = f"Title: {title}\n\n{doc.page_content}"
-    return chain.invoke({"query": query, "answer": answer, "document": document_text})
+    return chain.invoke(
+        {"query": query, "answer": answer, "document": document_text}
+    )
 
 
 def score_context_precision(
@@ -97,7 +101,8 @@ def score_context_precision(
 
     num_relevant = sum(1 for v in verdicts if v.relevant)
     logger.info(
-        f"{_MOD} {num_relevant}/{len(context_docs)} context documents are relevant"
+        f"{_MOD} {num_relevant}/{len(context_docs)} context documents "
+        f"are relevant"
     )
 
     # No relevant documents → score 0.0

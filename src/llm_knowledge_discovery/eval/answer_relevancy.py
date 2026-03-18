@@ -65,12 +65,14 @@ def score_answer_relevancy(
     max_tokens: int = 2048,
 ) -> AnswerRelevancyResult:
     """
-    Score the answer relevancy of a RAG-generated answer against the original query.
+    Score the answer relevancy of a RAG-generated answer against the original
+    query.
 
     Answer relevancy measures whether the answer actually addresses the question
-    asked. Follows the RAGAS approach: (1) generate k synthetic queries that the
-    answer appears to address, (2) embed those queries and the original query,
-    (3) compute mean cosine similarity between the original and synthetic queries.
+    asked. Follows the RAGAS approach: (1) generate k synthetic queries that
+    the answer appears to address, (2) embed those queries and the original
+    query, (3) compute mean cosine similarity between the original and
+    synthetic queries.
 
     A high score means the answer is tightly focused on the original question.
     A low score suggests the answer drifted — addressing a different question or
