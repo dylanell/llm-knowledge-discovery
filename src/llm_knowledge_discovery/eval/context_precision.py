@@ -25,11 +25,10 @@ _DOCUMENT_RELEVANCE_PROMPT = ChatPromptTemplate.from_messages(
             "context document, determine whether the document is relevant — "
             "i.e., whether it contains information that is useful for "
             "answering the query. A document is relevant if it directly "
-            "supports or "
-            "provides evidence for the answer, or contains information clearly "
-            "pertinent to the query. A document is NOT relevant if it is only "
-            "tangentially related or contains no information useful for "
-            "answering the query.",
+            "supports or provides evidence for the answer, or contains "
+            "information clearly pertinent to the query. A document is NOT "
+            "relevant if it is only tangentially related or contains no "
+            "information useful for answering the query.",
         ),
         (
             "human",

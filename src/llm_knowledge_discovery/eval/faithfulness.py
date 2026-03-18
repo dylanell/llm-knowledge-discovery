@@ -45,12 +45,12 @@ _CLAIM_VERIFICATION_PROMPT = ChatPromptTemplate.from_messages(
             "system",
             "You are a fact verifier. Given a context (a set of scientific "
             "abstracts) and a single factual claim, determine whether the "
-            "claim is directly supported by the context. "
-            "A claim is supported if the context explicitly states it or if "
-            "it is a trivial direct inference (e.g. a restatement in "
-            "different words). A claim is NOT supported if it requires "
-            "multi-hop reasoning beyond what the context says, or if it "
-            "introduces information not present in the context.",
+            "claim is directly supported by the context. A claim is supported "
+            "if the context explicitly states it or if it is a trivial direct "
+            "inference (e.g. a restatement in different words). A claim is NOT "
+            "supported if it requires multi-hop reasoning beyond what the "
+            "context says, or if it introduces information not present in the "
+            "context.",
         ),
         (
             "human",
