@@ -112,7 +112,9 @@ def build_rag_chain(
     Returns:
         A Runnable[str, RagResult] — takes a query string, returns a RagResult
     """
-    llm = ChatAnthropic(model=model, temperature=temperature, max_tokens=max_tokens)
+    llm = ChatAnthropic(
+        model=model, temperature=temperature, max_tokens=max_tokens
+    )
 
     chain = (
         {
@@ -172,7 +174,9 @@ def invoke_and_review(
         Tuple of (RagResult, list of CritiqueResult from each step).
         Use _format_answer(result.answer, result.references) for display.
     """
-    llm = ChatAnthropic(model=model, temperature=temperature, max_tokens=max_tokens)
+    llm = ChatAnthropic(
+        model=model, temperature=temperature, max_tokens=max_tokens
+    )
 
     # Retrieve and rerank once — same docs for generation and critic checks
     docs = retrieve_and_rerank(query, vectorstore, retrieval_k, rerank_k)
